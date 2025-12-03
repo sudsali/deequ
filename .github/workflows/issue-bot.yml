@@ -42,5 +42,9 @@ jobs:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           EVENT_TYPE: ${{ github.event_name }}
           KB_S3_BUCKET: ${{ secrets.KB_S3_BUCKET }}
+          BEDROCK_MODEL_ID: ${{ secrets.BEDROCK_MODEL_ID }}
+          BEDROCK_API_VERSION: ${{ secrets.BEDROCK_API_VERSION }}
+          BOT_SYSTEM_PROMPT: ${{ secrets.BOT_SYSTEM_PROMPT }}
+          DEEQU_KNOWLEDGE_BASE: ${{ secrets.DEEQU_KNOWLEDGE_BASE }}
         run: |
           python src/scripts/issue-bot.py $ISSUE_NUMBER
