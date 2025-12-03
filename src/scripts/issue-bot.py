@@ -90,11 +90,16 @@ class DeequIssueBot:
             title = issue_data.get('title', '')
             body = issue_data.get('body', '')
             
+            logger.info(f"Evaluating repository search for: '{title}'")
+            logger.info(f"Body preview: '{body[:100]}...'")
+            
             # Get repository search decision prompt from environment
             search_prompt = os.getenv('REPO_SEARCH_PROMPT')
             if not search_prompt:
                 logger.warning("REPO_SEARCH_PROMPT not configured, skipping repository search")
                 return False
+            
+            logger.info("REPO_SEARCH_PROMPT is configured, calling Bedrock for decision")
             
             prompt = f"""{search_prompt}
 
@@ -114,6 +119,8 @@ Issue: {title}
             result = json.loads(response['body'].read())
             answer = result['content'][0]['text'].strip()
             
+            logger.info(f"Bedrock raw response: '{answer}'")
+            
             lines = answer.split('\n')
             decision = lines[0].strip().upper()
             needs_search = "YES" in decision
@@ -121,12 +128,12 @@ Issue: {title}
             # Extract search terms if search is needed
             if needs_search and len(lines) > 1:
                 self.current_search_terms = lines[1].strip().split()[:5]
+                logger.info(f"Extracted search terms: {self.current_search_terms}")
             else:
                 self.current_search_terms = []
+                logger.info("No search terms extracted")
             
             logger.info(f"AI repository search decision: {decision} - {'Will search' if needs_search else 'Skip search'}")
-            if needs_search:
-                logger.info(f"Search terms: {self.current_search_terms}")
             return needs_search
             
         except Exception as e:
@@ -136,7 +143,10 @@ Issue: {title}
     def get_enhanced_context(self, issue_data):
         """Get enhanced context by combining KB with live repository search"""
         logger.info("Starting get_enhanced_context - checking if repository search needed")
+        logger.info(f"Issue title: {issue_data.get('title', '')}")
+        logger.info(f"Issue body preview: {issue_data.get('body', '')[:100]}...")
         base_context = self.deequ_context
+        logger.info(f"Base context length: {len(base_context)} chars")
         
         # Use AI to decide if repository search is needed
         if self.should_search_repository(issue_data):
@@ -158,6 +168,7 @@ Issue: {title}
             logger.info(f"Context too large ({estimated_tokens} tokens), applying smart truncation")
             enhanced_context = self.smart_truncate(enhanced_context, issue_data)
         
+        logger.info(f"Final enhanced context length: {len(enhanced_context)} chars")
         return enhanced_context
 
     def smart_truncate(self, content, issue_data):
@@ -205,11 +216,17 @@ Issue: {title}
             # Use search terms from should_search_repository
             search_terms = getattr(self, 'current_search_terms', [])
             
+            logger.info(f"Starting repository search with terms: {search_terms}")
+            
             if not search_terms:
+                logger.warning("No search terms available, skipping repository search")
                 return ""
             
             headers = {'Authorization': f'token {self.github_token}'} if self.github_token else {}
             repo = os.getenv('GITHUB_REPOSITORY', 'sudsali/deequ')
+            
+            logger.info(f"Searching repository: {repo}")
+            logger.info(f"GitHub token available: {bool(self.github_token)}")
             
             # Search in documentation and examples
             search_paths = ['README', 'docs/', 'examples/', 'src/main/scala/com/amazon/deequ/']
@@ -217,19 +234,29 @@ Issue: {title}
             
             for path_filter in search_paths:
                 search_url = f"https://api.github.com/search/code?q={'+'.join(search_terms)}+repo:{repo}+path:{path_filter}"
+                logger.info(f"Searching path: {path_filter} with URL: {search_url}")
                 
                 response = self.safe_github_request(search_url, headers)
                 if response:
                     results = response.json().get('items', [])[:2]  # Top 2 per path
+                    logger.info(f"Found {len(results)} results for path {path_filter}")
                     
                     for result in results:
+                        logger.info(f"Processing file: {result['name']} at {result['path']}")
                         file_content = self.get_file_content(result['url'], headers)
                         if file_content:
                             repo_context += f"\n### {result['name']}\n{file_content[:800]}\n"
+                            logger.info(f"Added {len(file_content[:800])} chars from {result['name']}")
+                        else:
+                            logger.warning(f"Failed to get content for {result['name']}")
+                else:
+                    logger.warning(f"No response from GitHub API for path {path_filter}")
                 
                 if len(repo_context) > 3000:  # Limit total context
+                    logger.info("Repository context limit reached, stopping search")
                     break
             
+            logger.info(f"Total repository context gathered: {len(repo_context)} chars")
             return repo_context
             
         except Exception as e:
