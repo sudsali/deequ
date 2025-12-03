@@ -106,16 +106,27 @@ Issue: {title}
                 body=json.dumps({
                     'anthropic_version': self.api_version,
                     'messages': [{'role': 'user', 'content': prompt}],
-                    'max_tokens': 10,
+                    'max_tokens': 50,
                     'temperature': 0.1
                 })
             )
             
             result = json.loads(response['body'].read())
-            answer = result['content'][0]['text'].strip().upper()
+            answer = result['content'][0]['text'].strip()
             
-            needs_search = "YES" in answer
-            logger.info(f"AI repository search decision: {answer} - {'Will search' if needs_search else 'Skip search'}")
+            lines = answer.split('\n')
+            decision = lines[0].strip().upper()
+            needs_search = "YES" in decision
+            
+            # Extract search terms if search is needed
+            if needs_search and len(lines) > 1:
+                self.current_search_terms = lines[1].strip().split()[:5]
+            else:
+                self.current_search_terms = []
+            
+            logger.info(f"AI repository search decision: {decision} - {'Will search' if needs_search else 'Skip search'}")
+            if needs_search:
+                logger.info(f"Search terms: {self.current_search_terms}")
             return needs_search
             
         except Exception as e:
@@ -191,9 +202,8 @@ Issue: {title}
     def search_repository_docs(self, issue_data):
         """Search repository documentation and examples for relevant context"""
         try:
-            title = issue_data.get('title', '')
-            body = issue_data.get('body', '')
-            search_terms = self.extract_key_terms(f"{title} {body}")
+            # Use search terms from should_search_repository
+            search_terms = getattr(self, 'current_search_terms', [])
             
             if not search_terms:
                 return ""
@@ -202,7 +212,7 @@ Issue: {title}
             repo = os.getenv('GITHUB_REPOSITORY', 'sudsali/deequ')
             
             # Search in documentation and examples
-            search_paths = ['README', 'docs/', 'examples/', 'src/main/scala/com/amazon/deequ/examples/']
+            search_paths = ['README', 'docs/', 'examples/', 'src/main/scala/com/amazon/deequ/']
             repo_context = ""
             
             for path_filter in search_paths:
