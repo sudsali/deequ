@@ -8,7 +8,6 @@ import logging
 import base64
 import datetime
 
-# Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -18,11 +17,10 @@ class DeequIssueBot:
         self.slack_webhook = os.getenv('SLACK_WEBHOOK_URL')
         self.event_type = os.getenv('EVENT_TYPE', 'issues')
         self.system_prompt = os.getenv('BOT_SYSTEM_PROMPT', self.get_default_prompt())
-        self.bedrock = boto3.client('bedrock-runtime', region_name='us-east-1')
+        self.bedrock = boto3.client('bedrock-runtime')
         self.model_id = os.getenv('BEDROCK_MODEL_ID')
         self.api_version = os.getenv('BEDROCK_API_VERSION')
         
-        # Validate required environment variables
         if not self.model_id:
             raise ValueError("BEDROCK_MODEL_ID environment variable is required")
         if not self.system_prompt or "not configured" in self.system_prompt:
@@ -30,7 +28,6 @@ class DeequIssueBot:
         if not self.api_version:
             raise ValueError("BEDROCK_API_VERSION environment variable is required")
         
-        # Load KB safely - don't crash on failure
         try:
             self.deequ_context = self.load_deequ_context()
         except Exception as e:
@@ -40,12 +37,10 @@ class DeequIssueBot:
     def load_deequ_context(self):
         """Load Deequ knowledge base from S3 or environment variable"""
         try:
-            # Try S3 first with validation
             s3 = boto3.client('s3')
-            bucket = os.getenv('KB_S3_BUCKET', 'deequ-knowledge-base')
-            key = 'deequ-kb.md'
+            bucket = os.getenv('KB_S3_BUCKET')
+            key = os.getenv('KB_S3_KEY')
             
-            # Check if bucket exists
             try:
                 s3.head_bucket(Bucket=bucket)
             except:
@@ -62,7 +57,6 @@ class DeequIssueBot:
                 logger.info("Using fallback KB from environment")
                 return kb_content
             
-            # Final fallback
             logger.warning("No knowledge base available")
             return "Deequ knowledge base not available"
 
@@ -71,7 +65,6 @@ class DeequIssueBot:
         try:
             response = requests.get(url, headers=headers, timeout=10)
             if response.status_code == 403:
-                # Check if it's rate limiting
                 if 'rate limit' in response.text.lower():
                     logger.warning("GitHub API rate limited - skipping repository search")
                     return None
@@ -93,7 +86,6 @@ class DeequIssueBot:
             logger.info(f"Evaluating repository search for: '{title}'")
             logger.info(f"Body preview: '{body[:100]}...'")
             
-            # Get repository search decision prompt from environment
             search_prompt = os.getenv('REPO_SEARCH_PROMPT')
             if not search_prompt:
                 logger.warning("REPO_SEARCH_PROMPT not configured, skipping repository search")
@@ -125,7 +117,6 @@ Issue: {title}
             decision = lines[0].strip().upper()
             needs_search = "YES" in decision
             
-            # Extract search terms if search is needed
             if needs_search and len(lines) > 1:
                 self.current_search_terms = lines[1].strip().split()[:5]
                 logger.info(f"Extracted search terms: {self.current_search_terms}")
@@ -148,7 +139,6 @@ Issue: {title}
         base_context = self.deequ_context
         logger.info(f"Base context length: {len(base_context)} chars")
         
-        # Use AI to decide if repository search is needed
         if self.should_search_repository(issue_data):
             logger.info("AI determined repository search is needed")
             repo_context = self.search_repository_docs(issue_data)
@@ -162,7 +152,6 @@ Issue: {title}
             logger.info("AI determined repository search not needed, using KB only")
             enhanced_context = base_context
         
-        # Apply smart truncation instead of simple truncation
         estimated_tokens = self.count_tokens_estimate(enhanced_context)
         if estimated_tokens > 8000:
             logger.info(f"Context too large ({estimated_tokens} tokens), applying smart truncation")
@@ -176,21 +165,17 @@ Issue: {title}
         try:
             sections = content.split('\n## ')
             if len(sections) <= 1:
-                # No clear sections, just truncate from end
                 target_chars = 7000 * 4
                 return content[:target_chars]
             
             search_terms = self.extract_key_terms(f"{issue_data.get('title', '')} {issue_data.get('body', '')}")
             
-            # Score sections by relevance
             scored_sections = []
             for i, section in enumerate(sections):
                 score = sum(1 for term in search_terms if term.lower() in section.lower())
-                # Boost score for earlier sections (likely more important)
                 score += max(0, 10 - i)
                 scored_sections.append((score, section))
             
-            # Keep highest scoring sections within token limit
             sorted_sections = sorted(scored_sections, key=lambda x: x[0], reverse=True)
             result = ""
             target_chars = 7000 * 4
@@ -213,52 +198,30 @@ Issue: {title}
     def search_repository_docs(self, issue_data):
         """Search repository documentation and examples for relevant context"""
         try:
-            # Use search terms from should_search_repository
             search_terms = getattr(self, 'current_search_terms', [])
             
-            logger.info(f"Starting repository search with terms: {search_terms}")
-            
             if not search_terms:
-                logger.warning("No search terms available, skipping repository search")
                 return ""
             
             headers = {'Authorization': f'token {self.github_token}'} if self.github_token else {}
             repo = os.getenv('GITHUB_REPOSITORY')
-            
-            logger.info(f"Searching repository: {repo}")
-            logger.info(f"GitHub token available: {bool(self.github_token)}")
-            
-            # Search in documentation and examples
-            search_paths = ['README', 'docs/', 'examples/', 'src/main/scala/com/amazon/deequ/']
             repo_context = ""
             
-            for path_filter in search_paths:
-                # Use only the first (most relevant) search term to avoid over-restrictive queries
-                primary_term = search_terms[0] if search_terms else "Distance"
-                search_url = f"https://api.github.com/search/code?q={primary_term}+repo:{repo}+path:{path_filter}"
-                logger.info(f"Searching path: {path_filter} with URL: {search_url}")
+            for term in search_terms[:3]:
+                search_url = f"https://api.github.com/search/code?q={term}+OR+{term.capitalize()}+repo:{repo}+extension:scala"
                 
                 response = self.safe_github_request(search_url, headers)
                 if response:
-                    results = response.json().get('items', [])[:2]  # Top 2 per path
-                    logger.info(f"Found {len(results)} results for path {path_filter}")
+                    results = response.json().get('items', [])[:2]
                     
                     for result in results:
-                        logger.info(f"Processing file: {result['name']} at {result['path']}")
                         file_content = self.get_file_content(result['url'], headers)
                         if file_content:
-                            repo_context += f"\n### {result['name']}\n{file_content[:800]}\n"
-                            logger.info(f"Added {len(file_content[:800])} chars from {result['name']}")
-                        else:
-                            logger.warning(f"Failed to get content for {result['name']}")
-                else:
-                    logger.warning(f"No response from GitHub API for path {path_filter}")
+                            repo_context += f"\n### {result['name']}\n{file_content}\n"
                 
-                if len(repo_context) > 3000:  # Limit total context
-                    logger.info("Repository context limit reached, stopping search")
+                if len(repo_context) > 5000:
                     break
             
-            logger.info(f"Total repository context gathered: {len(repo_context)} chars")
             return repo_context
             
         except Exception as e:
@@ -286,7 +249,6 @@ Issue: {title}
         headers = {'Authorization': f'token {self.github_token}'} if self.github_token else {}
 
         try:
-            # Get issue details
             issue_url = f"https://api.github.com/repos/{repo}/issues/{issue_number}"
             issue_response = self.safe_github_request(issue_url, headers)
             
@@ -296,13 +258,11 @@ Issue: {title}
                 
             issue_data = issue_response.json()
             
-            # Get recent comments for context (increased from 3 to 10)
             comments_url = f"https://api.github.com/repos/{repo}/issues/{issue_number}/comments"
             comments_response = self.safe_github_request(comments_url, headers)
             
             if comments_response:
                 comments = comments_response.json()
-                # Get last 10 comments for better context
                 recent_comments = comments[-10:] if len(comments) > 10 else comments
                 issue_data['recent_comments'] = recent_comments
             else:
@@ -320,7 +280,6 @@ Issue: {title}
         body = issue_data.get('body', '') or ''
         comments = issue_data.get('recent_comments', [])
         
-        # Build context from recent comments
         comment_context = ""
         if comments:
             comment_context = "\n\nRECENT CONVERSATION:\n"
@@ -331,7 +290,6 @@ Issue: {title}
         
         is_followup = self.event_type == 'issue_comment'
         
-        # Get enhanced context (KB + repository search if needed)
         logger.info("About to call get_enhanced_context")
         try:
             enhanced_context = self.get_enhanced_context(issue_data)
@@ -364,13 +322,11 @@ DEEQU KNOWLEDGE BASE:
             
             result = json.loads(response['body'].read())
             
-            # Validate response structure
             if 'content' not in result or not result['content']:
                 raise ValueError("Invalid Bedrock response structure")
             
             ai_response = result['content'][0]['text'].strip()
             
-            # Check if AI wants to escalate
             should_escalate = "ESCALATE_TO_TEAM" in ai_response
             
             logger.info(f"AI Response - should_escalate: {should_escalate}")
@@ -392,10 +348,8 @@ DEEQU KNOWLEDGE BASE:
 
     def enhance_knowledge_base_with_validation(self, issue_data, analysis):
         """Enhance KB only after validating customer sentiment"""
-        # First check if there's customer feedback
         feedback = self.analyze_customer_feedback(issue_data)
         
-        # Only learn from positive feedback
         if feedback['sentiment'] == 'positive' and feedback['confidence'] > 0.4:
             logger.info(f"Positive feedback detected (confidence: {feedback['confidence']:.2f})")
             self.enhance_knowledge_base_if_needed(issue_data, analysis)
@@ -403,7 +357,6 @@ DEEQU KNOWLEDGE BASE:
             logger.info(f"Negative feedback detected - not learning from this interaction")
             self.log_escalation_pattern(issue_data, 'negative_customer_feedback')
         else:
-            # No clear feedback yet - learn tentatively from unsolved issues
             if analysis.get('should_escalate', True):
                 logger.info("Learning tentatively from unsolved issue - will validate with future feedback")
                 self.enhance_knowledge_base_if_needed(issue_data, analysis)
@@ -415,13 +368,11 @@ DEEQU KNOWLEDGE BASE:
         if not analysis.get('should_escalate', True):
             return  # No enhancement needed
         
-        # Rate limiting - only enhance once per hour
         last_update_key = 'kb-last-update'
         try:
             s3 = boto3.client('s3')
-            bucket = os.getenv('KB_S3_BUCKET', 'deequ-knowledge-base')
+            bucket = os.getenv('KB_S3_BUCKET')
             
-            # Check last update time
             try:
                 response = s3.head_object(Bucket=bucket, Key=last_update_key)
                 last_modified = response['LastModified']
@@ -435,62 +386,28 @@ DEEQU KNOWLEDGE BASE:
             logger.error(f"Rate limit check failed: {e}")
             return
         
-        # Extract key terms from issue
         title = issue_data.get('title', '')
         body = issue_data.get('body', '')
         issue_content = f"{title}\n{body}"
         
-        # Check if similar content already exists in KB
         if self.is_duplicate_content(issue_content):
             logger.info("Similar content already exists in KB")
             return
         
-        # Search repository for relevant information
         key_terms = self.extract_key_terms(issue_content)
         if not key_terms:
             return
         
-        # Get repository context for learning
         repo_context = self.search_repository_for_learning(key_terms)
         if repo_context:
             self.update_knowledge_base(issue_content, repo_context)
             
-            # Update rate limit marker
             try:
                 s3.put_object(Bucket=bucket, Key=last_update_key, Body=b'updated')
                 logger.info("KB enhanced with repository context")
             except Exception as e:
                 logger.error(f"Failed to update rate limit marker: {e}")
 
-    def search_repository_for_learning(self, key_terms):
-        """Enhanced repository search for learning (searches code + docs)"""
-        try:
-            headers = {'Authorization': f'token {self.github_token}'} if self.github_token else {}
-            repo = os.getenv('GITHUB_REPOSITORY')
-            
-            # Search both code and documentation using safe method
-            search_url = f"https://api.github.com/search/code?q={'+'.join(key_terms)}+repo:{repo}"
-            
-            response = self.safe_github_request(search_url, headers)
-            if not response:
-                return ""
-            
-            search_results = response.json().get('items', [])[:5]  # Top 5 results
-            if not search_results:
-                return ""
-            
-            repo_context = ""
-            for result in search_results:
-                file_content = self.get_file_content(result['url'], headers)
-                if file_content:
-                    repo_context += f"\n## {result['path']}\n{file_content[:1000]}\n"
-            
-            return repo_context
-            
-        except Exception as e:
-            logger.error(f"Repository search failed: {e}")
-            return ""
-    
     def analyze_customer_feedback(self, issue_data):
         """Analyze follow-up comments using sentiment analysis for feedback on bot responses"""
         comments = issue_data.get('recent_comments', [])
@@ -501,12 +418,10 @@ DEEQU KNOWLEDGE BASE:
             author = comment.get('user', {}).get('login', '')
             body = comment.get('body', '')
             
-            # Track bot comments
             if author == 'github-actions[bot]':
                 bot_comment_found = True
                 continue
                 
-            # Only analyze comments after bot response
             if bot_comment_found and len(body.strip()) > 10:
                 sentiment_score = self.get_sentiment_score(body)
                 if sentiment_score is not None:
@@ -517,13 +432,17 @@ DEEQU KNOWLEDGE BASE:
         
         avg_sentiment = sum(feedback_scores) / len(feedback_scores)
         
-        # Classify sentiment
         if avg_sentiment > 0.3:
             return {'sentiment': 'positive', 'confidence': avg_sentiment}
         elif avg_sentiment < -0.3:
             return {'sentiment': 'negative', 'confidence': abs(avg_sentiment)}
         else:
             return {'sentiment': 'neutral', 'confidence': abs(avg_sentiment)}
+
+    def has_negative_feedback_requiring_learning(self, issue_data):
+        """Check if bot needs to learn from negative feedback"""
+        feedback = self.analyze_customer_feedback(issue_data)
+        return feedback['sentiment'] == 'negative' and feedback['confidence'] > 0.4
     
     def get_sentiment_score(self, text):
         """Use Bedrock to analyze sentiment of customer feedback"""
@@ -554,7 +473,6 @@ Number only:"""
             result = json.loads(response['body'].read())
             sentiment_text = result['content'][0]['text'].strip()
             
-            # Parse the sentiment score
             try:
                 score = float(sentiment_text)
                 return max(-1.0, min(1.0, score))  # Clamp between -1 and 1
@@ -618,11 +536,9 @@ Respond with only "YES" or "NO"."""
         try:
             s3 = boto3.client('s3')
             
-            # Add timestamp to prevent conflicts
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             temp_key = f"{key}.tmp.{timestamp}"
             
-            # Write to temporary key first
             s3.put_object(
                 Bucket=bucket,
                 Key=temp_key,
@@ -630,7 +546,6 @@ Respond with only "YES" or "NO"."""
                 ServerSideEncryption='AES256'
             )
             
-            # Copy to final location (atomic operation)
             s3.copy_object(
                 Bucket=bucket,
                 CopySource={'Bucket': bucket, 'Key': temp_key},
@@ -638,7 +553,6 @@ Respond with only "YES" or "NO"."""
                 ServerSideEncryption='AES256'
             )
             
-            # Clean up temp file
             s3.delete_object(Bucket=bucket, Key=temp_key)
             
             logger.info(f"Safely updated S3 object: {key}")
@@ -651,7 +565,6 @@ Respond with only "YES" or "NO"."""
     def update_knowledge_base(self, issue_content, repo_context):
         """Update knowledge base with new information using safe S3 operations"""
         try:
-            # Prevent learning from bot's own responses
             if 'github-actions[bot]' in issue_content or 'AI assistance' in issue_content:
                 logger.info("Skipping KB update - contains bot content")
                 return
@@ -677,11 +590,10 @@ Provide ONLY the new section to append to the knowledge base. Be concise."""
             result = json.loads(response['body'].read())
             new_section = result['content'][0]['text']
             
-            # Update KB and save to S3 safely
             enhanced_kb = f"{self.deequ_context}\n\n{new_section}"
             
-            bucket = os.getenv('KB_S3_BUCKET', 'deequ-knowledge-base')
-            if self.safe_s3_update(bucket, 'deequ-kb.md', enhanced_kb):
+            bucket = os.getenv('KB_S3_BUCKET')
+            if self.safe_s3_update(bucket, os.getenv('KB_S3_KEY'), enhanced_kb):
                 self.deequ_context = enhanced_kb
                 logger.info("Knowledge base updated successfully")
             
@@ -694,7 +606,6 @@ Provide ONLY the new section to append to the knowledge base. Be concise."""
         body = issue_data.get('body', '')
         category = 'unknown'
         
-        # Simple keyword-based categorization for tracking
         if any(word in title.lower() + body.lower() for word in ['spark', 'version', 'compatibility']):
             category = 'version_compatibility'
         elif any(word in title.lower() + body.lower() for word in ['dqdl', 'rules', 'syntax']):
@@ -717,12 +628,10 @@ Provide ONLY the new section to append to the knowledge base. Be concise."""
         title = issue_data.get('title', '')
         issue_url = issue_data.get('html_url', '')
         
-        # Use new analysis structure
         bot_response = analysis.get('response', 'No analysis available')
         ai_category = analysis.get('category', 'unknown')
         should_escalate = analysis.get('should_escalate', True)
         
-        # Create intelligent summary
         if not should_escalate:
             analysis_text = f"**AI Analysis:** Bot provided direct solution\n\n**Category:** {ai_category}"
             solution_text = f"*Bot's Solution (Posted):*\n{bot_response}"
@@ -808,7 +717,6 @@ Provide ONLY the new section to append to the knowledge base. Be concise."""
             logger.info("No GitHub token - skipping comment post")
             return
 
-        # Add better disclaimer encouraging feedback
         comment_with_disclaimer = f"""{response_text}
 
 ---
@@ -836,7 +744,6 @@ def main():
         print("Usage: python issue-bot.py <issue_number>")
         sys.exit(1)
 
-    # Prevent bot from responding to itself
     github_actor = os.getenv('GITHUB_ACTOR', '')
     if github_actor == 'github-actions[bot]':
         logger.info("Skipping - bot comment detected")
@@ -850,15 +757,56 @@ def main():
         logger.error(f"Could not fetch issue #{issue_number}")
         sys.exit(1)
 
-    logger.info(f"Analyzing issue #{issue_number}")
+    if bot.has_negative_feedback_requiring_learning(issue_data):
+        logger.info("Negative feedback detected - entering learning mode")
+        
+        if bot.should_search_repository(issue_data):
+            repo_context = bot.search_repository_docs(issue_data)
+            
+            if repo_context:
+                title = issue_data.get('title', '')
+                learning_prompt = f"""Based on this repository code, provide a correct and helpful answer to: {title}
+
+Repository Code:
+{repo_context}
+
+Provide a clear, accurate explanation of what this code does and how to use it."""
+
+                try:
+                    response = bot.bedrock.invoke_model(
+                        modelId=bot.model_id,
+                        body=json.dumps({
+                            'anthropic_version': bot.api_version,
+                            'messages': [{'role': 'user', 'content': learning_prompt}],
+                            'max_tokens': 1000,
+                            'temperature': 0.3
+                        })
+                    )
+                    
+                    result = json.loads(response['body'].read())
+                    learned_content = result['content'][0]['text'].strip()
+                    
+                    bot.update_knowledge_base(f"{title}\n{issue_data.get('body', '')}", repo_context)
+                    
+                    correction_comment = f"""Thank you for the feedback! I've learned from the repository code and here's the correct information:
+
+{learned_content}
+
+I apologize for the earlier incorrect response. I've updated my knowledge base to provide better answers in the future."""
+                    
+                    bot.post_comment(issue_number, correction_comment)
+                    logger.info("Posted corrected response after learning")
+                    return
+                    
+                except Exception as e:
+                    logger.error(f"Failed to generate learned response: {e}")
+
     analysis = bot.analyze_with_bedrock(issue_data)
     
     if not analysis.get('should_escalate', True):
-        # Bot can solve it - post solution directly
         bot.post_comment(issue_number, analysis['response'])
         logger.info("Bot provided solution")
     else:
-        # Always comment first, then escalate
         escalation_comment = """Thank you for reporting this issue.
 
 This requires attention from our maintainer team. The team has been notified and will review this shortly.
@@ -866,17 +814,8 @@ This requires attention from our maintainer team. The team has been notified and
 We appreciate your patience and will get back to you as soon as possible."""
         
         bot.post_comment(issue_number, escalation_comment)
-        
-        # Try to enhance knowledge base with sentiment validation
-        bot.enhance_knowledge_base_with_validation(issue_data, analysis)
-        
-        # Then escalate to team via Slack
         bot.send_to_slack(issue_number, issue_data, analysis)
         logger.info("Posted acknowledgment comment and escalated to team via Slack")
-        
-        # Log escalation for pattern analysis
-        escalation_reason = 'ai_requested_escalation'
-        bot.log_escalation_pattern(issue_data, escalation_reason)
 
 if __name__ == "__main__":
     main()
