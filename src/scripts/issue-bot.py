@@ -236,7 +236,7 @@ class DeequIssueBot:
             return None
 
     def analyze_with_bedrock(self, issue_data):
-        """Use Amazon Bedrock to analyze the issue"""
+        """Use Amazon Bedrock to get human-like response"""
         title = issue_data.get('title', '')
         body = issue_data.get('body', '') or ''
         comments = issue_data.get('recent_comments', [])
@@ -283,44 +283,22 @@ DEEQU KNOWLEDGE BASE:
             if 'content' not in result or not result['content']:
                 raise ValueError("Invalid Bedrock response structure")
             
-            content = result['content'][0]['text']
+            ai_response = result['content'][0]['text'].strip()
             
-            try:
-                # Extract JSON from response (handle cases where AI adds extra text)
-                content = content.strip()
-                
-                # Find JSON object in the response
-                start_idx = content.find('{')
-                end_idx = content.rfind('}') + 1
-                
-                if start_idx != -1 and end_idx > start_idx:
-                    json_content = content[start_idx:end_idx]
-                    parsed_response = json.loads(json_content)
-                else:
-                    # Fallback: try parsing the entire content
-                    parsed_response = json.loads(content)
-                
-                if 'can_solve' in parsed_response and 'response' in parsed_response:
-                    # Add confidence threshold check
-                    confidence = parsed_response.get('confidence', 'medium')
-                    can_solve = parsed_response.get('can_solve', False)
-                    
-                    # Log detailed analysis for debugging
-                    logger.info(f"AI Analysis - can_solve: {can_solve}, confidence: {confidence}, category: {parsed_response.get('category')}")
-                    logger.info(f"AI Reasoning: {parsed_response.get('reasoning', 'No reasoning provided')}")
-                    
-                    # Allow low confidence responses through, just log them
-                    if can_solve and confidence == 'low':
-                        logger.info(f"Low confidence response, but allowing it through")
-                    
-                    return parsed_response
-                else:
-                    self.log_escalation_pattern(issue_data, 'invalid_response_format')
-                    return self.fallback_analysis(issue_data)
-            except json.JSONDecodeError as e:
-                logger.warning(f"JSON parse failed, raw content: {content[:200]}...")
-                self.log_escalation_pattern(issue_data, 'json_parse_error')
-                return self.fallback_analysis(issue_data)
+            # Check if AI wants to escalate
+            should_escalate = "ESCALATE_TO_TEAM" in ai_response
+            
+            logger.info(f"AI Response - should_escalate: {should_escalate}")
+            if should_escalate:
+                logger.info("AI requested escalation to team")
+            else:
+                logger.info("AI provided direct solution")
+            
+            return {
+                'response': ai_response,
+                'should_escalate': should_escalate,
+                'category': self.classify_issue(issue_data)
+            }
                 
         except Exception as e:
             logger.error(f"Bedrock analysis failed: {e}")
@@ -793,8 +771,8 @@ def main():
     logger.info(f"Analyzing issue #{issue_number}")
     analysis = bot.analyze_with_bedrock(issue_data)
     
-    if analysis.get('can_solve', False):
-        # Bot can solve it - post solution
+    if not analysis.get('should_escalate', True):
+        # Bot can solve it - post solution directly
         bot.post_comment(issue_number, analysis['response'])
         logger.info("Bot provided solution")
     else:
@@ -815,7 +793,7 @@ We appreciate your patience and will get back to you as soon as possible."""
         logger.info("Posted acknowledgment comment and escalated to team via Slack")
         
         # Log escalation for pattern analysis
-        escalation_reason = 'ai_cannot_solve' if analysis.get('can_solve') == False else 'low_confidence'
+        escalation_reason = 'ai_requested_escalation'
         bot.log_escalation_pattern(issue_data, escalation_reason)
 
 if __name__ == "__main__":
