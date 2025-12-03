@@ -57,8 +57,8 @@ Respond in JSON format:
 }
 
 Assessment Guidelines:
-- can_solve = true for: usage questions, configuration issues, simple bugs with clear solutions
-- can_solve = false for: regression bugs, complex code changes, performance issues, new features
+- can_solve = true for: ANY usage questions, how-to questions, configuration issues, examples requests, simple bugs with clear solutions
+- can_solve = false ONLY for: code changes, performance issues, new features, complex architecture questions
 - Use "ESCALATE" only when you cannot provide any helpful guidance
 - Always provide reasoning for your decision
 - Be professional and helpful as a maintainer"""
