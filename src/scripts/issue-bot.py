@@ -297,7 +297,7 @@ DEEQU KNOWLEDGE BASE:
             return {
                 'response': ai_response,
                 'should_escalate': should_escalate,
-                'category': self.classify_issue(issue_data)
+                'category': 'question'
             }
                 
         except Exception as e:
