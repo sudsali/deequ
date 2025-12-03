@@ -124,6 +124,7 @@ Issue: {title}
 
     def get_enhanced_context(self, issue_data):
         """Get enhanced context by combining KB with live repository search"""
+        logger.info("Starting get_enhanced_context - checking if repository search needed")
         base_context = self.deequ_context
         
         # Use AI to decide if repository search is needed
