@@ -33,7 +33,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install requests boto3
+          pip install requests boto3 pynacl
 
       - name: Run issue analysis
         env:
@@ -41,5 +41,6 @@ jobs:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           EVENT_TYPE: ${{ github.event_name }}
+          KB_S3_BUCKET: ${{ secrets.KB_S3_BUCKET }}
         run: |
           python src/scripts/issue-bot.py $ISSUE_NUMBER
