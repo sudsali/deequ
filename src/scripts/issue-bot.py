@@ -223,7 +223,7 @@ Issue: {title}
                 return ""
             
             headers = {'Authorization': f'token {self.github_token}'} if self.github_token else {}
-            repo = os.getenv('GITHUB_REPOSITORY', 'sudsali/deequ')
+            repo = os.getenv('GITHUB_REPOSITORY')
             
             logger.info(f"Searching repository: {repo}")
             logger.info(f"GitHub token available: {bool(self.github_token)}")
@@ -282,7 +282,7 @@ Issue: {title}
 
     def fetch_issue_with_comments(self, issue_number):
         """Fetch issue and recent comments for context"""
-        repo = os.getenv('GITHUB_REPOSITORY', 'sudsali/deequ')
+        repo = os.getenv('GITHUB_REPOSITORY')
         headers = {'Authorization': f'token {self.github_token}'} if self.github_token else {}
 
         try:
@@ -466,7 +466,7 @@ DEEQU KNOWLEDGE BASE:
         """Enhanced repository search for learning (searches code + docs)"""
         try:
             headers = {'Authorization': f'token {self.github_token}'} if self.github_token else {}
-            repo = os.getenv('GITHUB_REPOSITORY', 'sudsali/deequ')
+            repo = os.getenv('GITHUB_REPOSITORY')
             
             # Search both code and documentation using safe method
             search_url = f"https://api.github.com/search/code?q={'+'.join(key_terms)}+repo:{repo}"
@@ -814,7 +814,7 @@ Provide ONLY the new section to append to the knowledge base. Be concise."""
 ---
 *This response was generated with AI assistance. If this doesn't solve your issue or you need clarification, please let us know and a human maintainer will help.*"""
 
-        repo = os.getenv('GITHUB_REPOSITORY', 'sudsali/deequ')
+        repo = os.getenv('GITHUB_REPOSITORY')
         url = f"https://api.github.com/repos/{repo}/issues/{issue_number}/comments"
         headers = {
             'Authorization': f'token {self.github_token}',
