@@ -632,19 +632,17 @@ Provide ONLY the new section to append to the knowledge base. Be concise."""
         title = issue_data.get('title', '')
         issue_url = issue_data.get('html_url', '')
         
-        # Use AI analysis instead of raw issue text
-        ai_reasoning = analysis.get('reasoning', 'No reasoning provided')
-        ai_category = analysis.get('category', 'unknown')
-        ai_confidence = analysis.get('confidence', 'unknown')
+        # Use new analysis structure
         bot_response = analysis.get('response', 'No analysis available')
-        can_solve = analysis.get('can_solve', False)
+        ai_category = analysis.get('category', 'unknown')
+        should_escalate = analysis.get('should_escalate', True)
         
-        # Create intelligent summary instead of raw copy-paste
-        if can_solve:
-            analysis_text = f"**AI Analysis:** {ai_reasoning}\n\n**Category:** {ai_category}\n**Confidence:** {ai_confidence}"
+        # Create intelligent summary
+        if not should_escalate:
+            analysis_text = f"**AI Analysis:** Bot provided direct solution\n\n**Category:** {ai_category}"
             solution_text = f"*Bot's Solution (Posted):*\n{bot_response}"
         else:
-            analysis_text = f"**AI Analysis:** {ai_reasoning}\n\n**Category:** {ai_category}\n**Why Escalated:** {ai_confidence} confidence - requires human expertise"
+            analysis_text = f"**AI Analysis:** Issue requires human expertise\n\n**Category:** {ai_category}"
             solution_text = f"*Bot's Assessment:*\n{bot_response}\n\n*Escalated for human review*"
         
         slack_message = {
@@ -666,7 +664,7 @@ Provide ONLY the new section to append to the knowledge base. Be concise."""
                         },
                         {
                             "type": "mrkdwn", 
-                            "text": f"*Category:* {analysis.get('category', 'unknown')}"
+                            "text": f"*Category:* {ai_category}"
                         }
                     ]
                 },
@@ -714,10 +712,9 @@ Provide ONLY the new section to append to the knowledge base. Be concise."""
         """Fallback analysis for when Bedrock fails"""
         self.log_escalation_pattern(issue_data, 'fallback_analysis_used')
         return {
-            "can_solve": False,
-            "category": "question",
-            "response": "ESCALATE",
-            "confidence": "low"
+            "response": "ESCALATE_TO_TEAM",
+            "should_escalate": True,
+            "category": "question"
         }
 
     def post_comment(self, issue_number, response_text):
