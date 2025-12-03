@@ -331,8 +331,12 @@ Issue: {title}
         
         # Get enhanced context (KB + repository search if needed)
         logger.info("About to call get_enhanced_context")
-        enhanced_context = self.get_enhanced_context(issue_data)
-        logger.info("Completed get_enhanced_context call")
+        try:
+            enhanced_context = self.get_enhanced_context(issue_data)
+            logger.info("Completed get_enhanced_context call")
+        except Exception as e:
+            logger.error(f"get_enhanced_context failed: {e}")
+            enhanced_context = self.deequ_context
         
         prompt = f"""{self.system_prompt}
 
