@@ -84,21 +84,60 @@ class DeequIssueBot:
         """Rough estimate: 1 token ≈ 4 characters for safety"""
         return len(text) // 4
 
+    def should_search_repository(self, issue_data):
+        """Use AI to determine if repository search is needed"""
+        try:
+            title = issue_data.get('title', '')
+            body = issue_data.get('body', '')
+            
+            # Get repository search decision prompt from environment
+            search_prompt = os.getenv('REPO_SEARCH_PROMPT')
+            if not search_prompt:
+                logger.warning("REPO_SEARCH_PROMPT not configured, skipping repository search")
+                return False
+            
+            prompt = f"""{search_prompt}
+
+Issue: {title}
+{body}"""
+
+            response = self.bedrock.invoke_model(
+                modelId=self.model_id,
+                body=json.dumps({
+                    'anthropic_version': self.api_version,
+                    'messages': [{'role': 'user', 'content': prompt}],
+                    'max_tokens': 10,
+                    'temperature': 0.1
+                })
+            )
+            
+            result = json.loads(response['body'].read())
+            answer = result['content'][0]['text'].strip().upper()
+            
+            needs_search = "YES" in answer
+            logger.info(f"AI repository search decision: {answer} - {'Will search' if needs_search else 'Skip search'}")
+            return needs_search
+            
+        except Exception as e:
+            logger.error(f"Repository search decision failed: {e}")
+            return False  # Default to no search on error
+
     def get_enhanced_context(self, issue_data):
         """Get enhanced context by combining KB with live repository search"""
         base_context = self.deequ_context
         
-        # If KB is insufficient, enhance with repository search
-        if len(base_context) < 5000 or "not available" in base_context:
-            logger.info("KB insufficient, searching repository for context")
+        # Use AI to decide if repository search is needed
+        if self.should_search_repository(issue_data):
+            logger.info("AI determined repository search is needed")
             repo_context = self.search_repository_docs(issue_data)
             if repo_context:
                 enhanced_context = f"{base_context}\n\n## Repository Context:\n{repo_context}"
                 logger.info(f"Enhanced context with {len(repo_context)} chars from repository")
             else:
-                logger.info("Repository search failed, using base KB only")
+                logger.info("Repository search returned no results, using base KB only")
                 enhanced_context = base_context
         else:
+            logger.info("AI determined repository search not needed, using KB only")
             enhanced_context = base_context
         
         # Apply smart truncation instead of simple truncation
