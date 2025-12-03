@@ -319,7 +319,7 @@ DEEQU KNOWLEDGE BASE:
             self.log_escalation_pattern(issue_data, 'negative_customer_feedback')
         else:
             # No clear feedback yet - learn tentatively from unsolved issues
-            if not analysis.get('can_solve', False):
+            if analysis.get('should_escalate', True):
                 logger.info("Learning tentatively from unsolved issue - will validate with future feedback")
                 self.enhance_knowledge_base_if_needed(issue_data, analysis)
             else:
@@ -327,7 +327,7 @@ DEEQU KNOWLEDGE BASE:
 
     def enhance_knowledge_base_if_needed(self, issue_data, analysis):
         """Dynamically enhance KB if bot cannot solve the issue"""
-        if analysis.get('can_solve', False):
+        if not analysis.get('should_escalate', True):
             return  # No enhancement needed
         
         # Rate limiting - only enhance once per hour
