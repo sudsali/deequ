@@ -293,7 +293,9 @@ Issue: {title}
         is_followup = self.event_type == 'issue_comment'
         
         # Get enhanced context (KB + repository search if needed)
+        logger.info("About to call get_enhanced_context")
         enhanced_context = self.get_enhanced_context(issue_data)
+        logger.info("Completed get_enhanced_context call")
         
         prompt = f"""{self.system_prompt}
 
