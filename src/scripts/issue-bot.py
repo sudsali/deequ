@@ -180,8 +180,12 @@ DEEQU KNOWLEDGE BASE:
             logger.info(f"Negative feedback detected - not learning from this interaction")
             self.log_escalation_pattern(issue_data, 'negative_customer_feedback')
         else:
-            logger.info(f"No clear feedback - waiting for validation before learning")
-            # Don't learn anything without validation
+            # No clear feedback yet - learn tentatively from unsolved issues
+            if not analysis.get('can_solve', False):
+                logger.info("Learning tentatively from unsolved issue - will validate with future feedback")
+                self.enhance_knowledge_base_if_needed(issue_data, analysis)
+            else:
+                logger.info("No feedback on solved issue - waiting for validation before learning")
 
     def enhance_knowledge_base_if_needed(self, issue_data, analysis):
         """Dynamically enhance KB if bot cannot solve the issue"""
