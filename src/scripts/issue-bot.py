@@ -286,7 +286,20 @@ DEEQU KNOWLEDGE BASE:
             content = result['content'][0]['text']
             
             try:
-                parsed_response = json.loads(content)
+                # Extract JSON from response (handle cases where AI adds extra text)
+                content = content.strip()
+                
+                # Find JSON object in the response
+                start_idx = content.find('{')
+                end_idx = content.rfind('}') + 1
+                
+                if start_idx != -1 and end_idx > start_idx:
+                    json_content = content[start_idx:end_idx]
+                    parsed_response = json.loads(json_content)
+                else:
+                    # Fallback: try parsing the entire content
+                    parsed_response = json.loads(content)
+                
                 if 'can_solve' in parsed_response and 'response' in parsed_response:
                     # Add confidence threshold check
                     confidence = parsed_response.get('confidence', 'medium')
@@ -304,7 +317,8 @@ DEEQU KNOWLEDGE BASE:
                 else:
                     self.log_escalation_pattern(issue_data, 'invalid_response_format')
                     return self.fallback_analysis(issue_data)
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as e:
+                logger.warning(f"JSON parse failed, raw content: {content[:200]}...")
                 self.log_escalation_pattern(issue_data, 'json_parse_error')
                 return self.fallback_analysis(issue_data)
                 
@@ -638,28 +652,22 @@ Provide ONLY the new section to append to the knowledge base. Be concise."""
             return
             
         title = issue_data.get('title', '')
-        body = issue_data.get('body', '') or 'No description provided'
         issue_url = issue_data.get('html_url', '')
-        bot_thoughts = analysis.get('response', 'No analysis available')
         
-        # Truncate body smartly - keep complete sentences
-        if len(body) > 1500:
-            truncated_body = body[:1500]
-            last_period = truncated_body.rfind('.')
-            if last_period > 1000:  # Keep if reasonable length
-                body = truncated_body[:last_period + 1] + f"\n\n*[Truncated - <{issue_url}|View Full Issue>]*"
-            else:
-                body = truncated_body + f"...\n\n*[Truncated - <{issue_url}|View Full Issue>]*"
-        
-        # Prepare bot's analysis with potential solution
+        # Use AI analysis instead of raw issue text
+        ai_reasoning = analysis.get('reasoning', 'No reasoning provided')
+        ai_category = analysis.get('category', 'unknown')
+        ai_confidence = analysis.get('confidence', 'unknown')
         bot_response = analysis.get('response', 'No analysis available')
-        confidence = analysis.get('confidence', 'unknown')
         can_solve = analysis.get('can_solve', False)
         
+        # Create intelligent summary instead of raw copy-paste
         if can_solve:
-            solution_text = f"*Bot's Solution (Posted):*\n{bot_response}\n\n*Confidence:* {confidence}"
+            analysis_text = f"**AI Analysis:** {ai_reasoning}\n\n**Category:** {ai_category}\n**Confidence:** {ai_confidence}"
+            solution_text = f"*Bot's Solution (Posted):*\n{bot_response}"
         else:
-            solution_text = f"*Bot's Potential Solution:*\n{bot_response}\n\n*Confidence:* {confidence} - Escalated for human review"
+            analysis_text = f"**AI Analysis:** {ai_reasoning}\n\n**Category:** {ai_category}\n**Why Escalated:** {ai_confidence} confidence - requires human expertise"
+            solution_text = f"*Bot's Assessment:*\n{bot_response}\n\n*Escalated for human review*"
         
         slack_message = {
             "text": f"🔔 Deequ Issue #{issue_number} Needs Team Attention",
@@ -688,7 +696,7 @@ Provide ONLY the new section to append to the knowledge base. Be concise."""
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f"*Description:*\n{body}"
+                        "text": analysis_text
                     }
                 },
                 {
