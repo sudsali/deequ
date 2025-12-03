@@ -17,51 +17,189 @@ class DeequIssueBot:
         self.github_token = os.getenv('GITHUB_TOKEN')
         self.slack_webhook = os.getenv('SLACK_WEBHOOK_URL')
         self.event_type = os.getenv('EVENT_TYPE', 'issues')
-        self.deequ_context = self.load_deequ_context()
         self.system_prompt = os.getenv('BOT_SYSTEM_PROMPT', self.get_default_prompt())
         self.bedrock = boto3.client('bedrock-runtime', region_name='us-east-1')
-        self.model_id = os.getenv('BEDROCK_MODEL_ID', 'anthropic.claude-3-haiku-20240307-v1:0')
+        self.model_id = os.getenv('BEDROCK_MODEL_ID')
+        self.api_version = os.getenv('BEDROCK_API_VERSION')
+        
+        # Validate required environment variables
+        if not self.model_id:
+            raise ValueError("BEDROCK_MODEL_ID environment variable is required")
+        if not self.system_prompt or "not configured" in self.system_prompt:
+            raise ValueError("BOT_SYSTEM_PROMPT environment variable is required")
+        if not self.api_version:
+            raise ValueError("BEDROCK_API_VERSION environment variable is required")
+        
+        # Load KB safely - don't crash on failure
+        try:
+            self.deequ_context = self.load_deequ_context()
+        except Exception as e:
+            logger.error(f"Failed to load KB during init: {e}")
+            self.deequ_context = "Deequ knowledge base not available"
 
     def load_deequ_context(self):
         """Load Deequ knowledge base from S3 or environment variable"""
         try:
-            # Try S3 first
+            # Try S3 first with validation
             s3 = boto3.client('s3')
             bucket = os.getenv('KB_S3_BUCKET', 'deequ-knowledge-base')
             key = 'deequ-kb.md'
             
+            # Check if bucket exists
+            try:
+                s3.head_bucket(Bucket=bucket)
+            except:
+                logger.warning(f"S3 bucket {bucket} not accessible, using fallback")
+                raise Exception("S3 bucket not accessible")
+            
             response = s3.get_object(Bucket=bucket, Key=key)
-            return response['Body'].read().decode('utf-8')[:8000]
+            kb_content = response['Body'].read().decode('utf-8')
+            logger.info(f"Loaded {len(kb_content)} chars from S3 KB")
+            return kb_content
         except:
-            # Fallback to environment variable (repository secret)
             kb_content = os.getenv('DEEQU_KNOWLEDGE_BASE')
             if kb_content:
-                return kb_content[:8000]
+                logger.info("Using fallback KB from environment")
+                return kb_content
             
             # Final fallback
+            logger.warning("No knowledge base available")
             return "Deequ knowledge base not available"
 
+    def safe_github_request(self, url, headers):
+        """Make GitHub API request with rate limit handling"""
+        try:
+            response = requests.get(url, headers=headers, timeout=10)
+            if response.status_code == 403:
+                # Check if it's rate limiting
+                if 'rate limit' in response.text.lower():
+                    logger.warning("GitHub API rate limited - skipping repository search")
+                    return None
+            return response if response.status_code == 200 else None
+        except Exception as e:
+            logger.error(f"GitHub API request failed: {e}")
+            return None
+
+    def count_tokens_estimate(self, text):
+        """Rough estimate: 1 token ≈ 4 characters for safety"""
+        return len(text) // 4
+
+    def get_enhanced_context(self, issue_data):
+        """Get enhanced context by combining KB with live repository search"""
+        base_context = self.deequ_context
+        
+        # If KB is insufficient, enhance with repository search
+        if len(base_context) < 5000 or "not available" in base_context:
+            logger.info("KB insufficient, searching repository for context")
+            repo_context = self.search_repository_docs(issue_data)
+            if repo_context:
+                enhanced_context = f"{base_context}\n\n## Repository Context:\n{repo_context}"
+                logger.info(f"Enhanced context with {len(repo_context)} chars from repository")
+            else:
+                logger.info("Repository search failed, using base KB only")
+                enhanced_context = base_context
+        else:
+            enhanced_context = base_context
+        
+        # Apply smart truncation instead of simple truncation
+        estimated_tokens = self.count_tokens_estimate(enhanced_context)
+        if estimated_tokens > 8000:
+            logger.info(f"Context too large ({estimated_tokens} tokens), applying smart truncation")
+            enhanced_context = self.smart_truncate(enhanced_context, issue_data)
+        
+        return enhanced_context
+
+    def smart_truncate(self, content, issue_data):
+        """Keep most relevant sections when content is too large"""
+        try:
+            sections = content.split('\n## ')
+            if len(sections) <= 1:
+                # No clear sections, just truncate from end
+                target_chars = 7000 * 4
+                return content[:target_chars]
+            
+            search_terms = self.extract_key_terms(f"{issue_data.get('title', '')} {issue_data.get('body', '')}")
+            
+            # Score sections by relevance
+            scored_sections = []
+            for i, section in enumerate(sections):
+                score = sum(1 for term in search_terms if term.lower() in section.lower())
+                # Boost score for earlier sections (likely more important)
+                score += max(0, 10 - i)
+                scored_sections.append((score, section))
+            
+            # Keep highest scoring sections within token limit
+            sorted_sections = sorted(scored_sections, key=lambda x: x[0], reverse=True)
+            result = ""
+            target_chars = 7000 * 4
+            
+            for score, section in sorted_sections:
+                section_text = f"\n## {section}" if result else section
+                if len(result + section_text) < target_chars:
+                    result += section_text
+                else:
+                    break
+            
+            logger.info(f"Smart truncated context from {len(content)} to {len(result)} chars")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Smart truncation failed: {e}")
+            target_chars = 7000 * 4
+            return content[:target_chars]
+
+    def search_repository_docs(self, issue_data):
+        """Search repository documentation and examples for relevant context"""
+        try:
+            title = issue_data.get('title', '')
+            body = issue_data.get('body', '')
+            search_terms = self.extract_key_terms(f"{title} {body}")
+            
+            if not search_terms:
+                return ""
+            
+            headers = {'Authorization': f'token {self.github_token}'} if self.github_token else {}
+            repo = os.getenv('GITHUB_REPOSITORY', 'sudsali/deequ')
+            
+            # Search in documentation and examples
+            search_paths = ['README', 'docs/', 'examples/', 'src/main/scala/com/amazon/deequ/examples/']
+            repo_context = ""
+            
+            for path_filter in search_paths:
+                search_url = f"https://api.github.com/search/code?q={'+'.join(search_terms)}+repo:{repo}+path:{path_filter}"
+                
+                response = self.safe_github_request(search_url, headers)
+                if response:
+                    results = response.json().get('items', [])[:2]  # Top 2 per path
+                    
+                    for result in results:
+                        file_content = self.get_file_content(result['url'], headers)
+                        if file_content:
+                            repo_context += f"\n### {result['name']}\n{file_content[:800]}\n"
+                
+                if len(repo_context) > 3000:  # Limit total context
+                    break
+            
+            return repo_context
+            
+        except Exception as e:
+            logger.error(f"Repository docs search failed: {e}")
+            return ""
+
+    def get_file_content(self, file_url, headers):
+        """Get content of a specific file from GitHub API with rate limit handling"""
+        try:
+            response = self.safe_github_request(file_url, headers)
+            if response:
+                content = base64.b64decode(response.json()['content']).decode('utf-8')
+                return content
+        except Exception as e:
+            logger.error(f"Failed to get file content: {e}")
+        return ""
+
     def get_default_prompt(self):
-        """Default system prompt (fallback)"""
-        return """You are an official Deequ project maintainer representing AWS Labs. 
-
-SECURITY: Never mention internal AWS systems or confidential information.
-
-Respond in JSON format:
-{
-    "can_solve": true/false,
-    "category": "bug|question|feature-request|documentation", 
-    "response": "Your maintainer response OR 'ESCALATE'",
-    "confidence": "high|medium|low",
-    "reasoning": "Brief explanation of your assessment"
-}
-
-Assessment Guidelines:
-- can_solve = true for: ANY usage questions, how-to questions, configuration issues, examples requests, simple bugs with clear solutions
-- can_solve = false ONLY for: code changes, performance issues, new features, complex architecture questions
-- Use "ESCALATE" only when you cannot provide any helpful guidance
-- Always provide reasoning for your decision
-- Be professional and helpful as a maintainer"""
+        """Fallback when BOT_SYSTEM_PROMPT is not configured"""
+        return "System prompt not configured - BOT_SYSTEM_PROMPT environment variable required"
 
     def fetch_issue_with_comments(self, issue_number):
         """Fetch issue and recent comments for context"""
@@ -71,19 +209,19 @@ Assessment Guidelines:
         try:
             # Get issue details
             issue_url = f"https://api.github.com/repos/{repo}/issues/{issue_number}"
-            issue_response = requests.get(issue_url, headers=headers, timeout=30)
+            issue_response = self.safe_github_request(issue_url, headers)
             
-            if issue_response.status_code != 200:
-                logger.error(f"Failed to fetch issue: {issue_response.status_code}")
+            if not issue_response:
+                logger.error(f"Failed to fetch issue: {issue_number}")
                 return None
                 
             issue_data = issue_response.json()
             
             # Get recent comments for context (increased from 3 to 10)
             comments_url = f"https://api.github.com/repos/{repo}/issues/{issue_number}/comments"
-            comments_response = requests.get(comments_url, headers=headers, timeout=30)
+            comments_response = self.safe_github_request(comments_url, headers)
             
-            if comments_response.status_code == 200:
+            if comments_response:
                 comments = comments_response.json()
                 # Get last 10 comments for better context
                 recent_comments = comments[-10:] if len(comments) > 10 else comments
@@ -114,6 +252,9 @@ Assessment Guidelines:
         
         is_followup = self.event_type == 'issue_comment'
         
+        # Get enhanced context (KB + repository search if needed)
+        enhanced_context = self.get_enhanced_context(issue_data)
+        
         prompt = f"""{self.system_prompt}
 
 CONTEXT:
@@ -123,13 +264,13 @@ CONTEXT:
 {comment_context}
 
 DEEQU KNOWLEDGE BASE:
-{self.deequ_context}"""
+{enhanced_context}"""
 
         try:
             response = self.bedrock.invoke_model(
                 modelId=self.model_id,
                 body=json.dumps({
-                    'anthropic_version': 'bedrock-2023-05-31',
+                    'anthropic_version': self.api_version,
                     'messages': [{'role': 'user', 'content': prompt}],
                     'max_tokens': 1000,
                     'temperature': 0.3
@@ -137,6 +278,11 @@ DEEQU KNOWLEDGE BASE:
             )
             
             result = json.loads(response['body'].read())
+            
+            # Validate response structure
+            if 'content' not in result or not result['content']:
+                raise ValueError("Invalid Bedrock response structure")
+            
             content = result['content'][0]['text']
             
             try:
@@ -227,37 +373,46 @@ DEEQU KNOWLEDGE BASE:
         if not key_terms:
             return
         
+        # Get repository context for learning
+        repo_context = self.search_repository_for_learning(key_terms)
+        if repo_context:
+            self.update_knowledge_base(issue_content, repo_context)
+            
+            # Update rate limit marker
+            try:
+                s3.put_object(Bucket=bucket, Key=last_update_key, Body=b'updated')
+                logger.info("KB enhanced with repository context")
+            except Exception as e:
+                logger.error(f"Failed to update rate limit marker: {e}")
+
+    def search_repository_for_learning(self, key_terms):
+        """Enhanced repository search for learning (searches code + docs)"""
         try:
-            # Search GitHub API for relevant files
             headers = {'Authorization': f'token {self.github_token}'} if self.github_token else {}
-            search_url = f"https://api.github.com/search/code?q={'+'.join(key_terms)}+repo:{os.getenv('GITHUB_REPOSITORY', 'sudsali/deequ')}"
+            repo = os.getenv('GITHUB_REPOSITORY', 'sudsali/deequ')
             
-            response = requests.get(search_url, headers=headers, timeout=10)
-            if response.status_code != 200:
-                return
+            # Search both code and documentation using safe method
+            search_url = f"https://api.github.com/search/code?q={'+'.join(key_terms)}+repo:{repo}"
             
-            search_results = response.json().get('items', [])[:3]  # Top 3 results
+            response = self.safe_github_request(search_url, headers)
+            if not response:
+                return ""
+            
+            search_results = response.json().get('items', [])[:5]  # Top 5 results
             if not search_results:
-                return
+                return ""
             
-            # Get file contents
             repo_context = ""
             for result in search_results:
-                file_url = f"https://api.github.com/repos/{os.getenv('GITHUB_REPOSITORY', 'sudsali/deequ')}/contents/{result['path']}"
-                file_response = requests.get(file_url, headers=headers, timeout=10)
-                
-                if file_response.status_code == 200:
-                    content = base64.b64decode(file_response.json()['content']).decode('utf-8')
-                    repo_context += f"\n## {result['path']}\n{content[:1000]}\n"  # Limit size
+                file_content = self.get_file_content(result['url'], headers)
+                if file_content:
+                    repo_context += f"\n## {result['path']}\n{file_content[:1000]}\n"
             
-            if repo_context:
-                self.update_knowledge_base(issue_content, repo_context)
-                
-                # Update rate limit marker
-                s3.put_object(Bucket=bucket, Key=last_update_key, Body=b'updated')
-                
+            return repo_context
+            
         except Exception as e:
-            logger.error(f"KB enhancement failed: {e}")
+            logger.error(f"Repository search failed: {e}")
+            return ""
     
     def analyze_customer_feedback(self, issue_data):
         """Analyze follow-up comments using sentiment analysis for feedback on bot responses"""
@@ -312,7 +467,7 @@ Number only:"""
             response = self.bedrock.invoke_model(
                 modelId=self.model_id,
                 body=json.dumps({
-                    'anthropic_version': 'bedrock-2023-05-31',
+                    'anthropic_version': self.api_version,
                     'messages': [{'role': 'user', 'content': sentiment_prompt}],
                     'max_tokens': 10,
                     'temperature': 0.1
@@ -349,7 +504,7 @@ Respond with only "YES" or "NO"."""
             response = self.bedrock.invoke_model(
                 modelId=self.model_id,
                 body=json.dumps({
-                    'anthropic_version': 'bedrock-2023-05-31',
+                    'anthropic_version': self.api_version,
                     'messages': [{'role': 'user', 'content': check_prompt}],
                     'max_tokens': 10,
                     'temperature': 0.1
@@ -381,9 +536,49 @@ Respond with only "YES" or "NO"."""
         
         return terms[:5]  # Limit terms
     
-    def update_knowledge_base(self, issue_content, repo_context):
-        """Update KB and save to S3"""
+    def safe_s3_update(self, bucket, key, content):
+        """Safely update S3 with conflict prevention"""
         try:
+            s3 = boto3.client('s3')
+            
+            # Add timestamp to prevent conflicts
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            temp_key = f"{key}.tmp.{timestamp}"
+            
+            # Write to temporary key first
+            s3.put_object(
+                Bucket=bucket,
+                Key=temp_key,
+                Body=content.encode('utf-8'),
+                ServerSideEncryption='AES256'
+            )
+            
+            # Copy to final location (atomic operation)
+            s3.copy_object(
+                Bucket=bucket,
+                CopySource={'Bucket': bucket, 'Key': temp_key},
+                Key=key,
+                ServerSideEncryption='AES256'
+            )
+            
+            # Clean up temp file
+            s3.delete_object(Bucket=bucket, Key=temp_key)
+            
+            logger.info(f"Safely updated S3 object: {key}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Safe S3 update failed: {e}")
+            return False
+
+    def update_knowledge_base(self, issue_content, repo_context):
+        """Update knowledge base with new information using safe S3 operations"""
+        try:
+            # Prevent learning from bot's own responses
+            if 'github-actions[bot]' in issue_content or 'AI assistance' in issue_content:
+                logger.info("Skipping KB update - contains bot content")
+                return
+            
             enhancement_prompt = f"""Add missing information to help with this issue:
 
 Issue: {issue_content[:500]}
@@ -395,7 +590,7 @@ Provide ONLY the new section to append to the knowledge base. Be concise."""
             response = self.bedrock.invoke_model(
                 modelId=self.model_id,
                 body=json.dumps({
-                    'anthropic_version': 'bedrock-2023-05-31',
+                    'anthropic_version': self.api_version,
                     'messages': [{'role': 'user', 'content': enhancement_prompt}],
                     'max_tokens': 800,
                     'temperature': 0.3
@@ -405,20 +600,13 @@ Provide ONLY the new section to append to the knowledge base. Be concise."""
             result = json.loads(response['body'].read())
             new_section = result['content'][0]['text']
             
-            # Update KB and save to S3
+            # Update KB and save to S3 safely
             enhanced_kb = f"{self.deequ_context}\n\n{new_section}"
             
-            s3 = boto3.client('s3')
             bucket = os.getenv('KB_S3_BUCKET', 'deequ-knowledge-base')
-            s3.put_object(
-                Bucket=bucket,
-                Key='deequ-kb.md',
-                Body=enhanced_kb.encode('utf-8'),
-                ServerSideEncryption='AES256'
-            )
-            
-            self.deequ_context = enhanced_kb
-            logger.info("Knowledge base enhanced and saved to S3")
+            if self.safe_s3_update(bucket, 'deequ-kb.md', enhanced_kb):
+                self.deequ_context = enhanced_kb
+                logger.info("Knowledge base updated successfully")
             
         except Exception as e:
             logger.error(f"KB update failed: {e}")
@@ -441,11 +629,7 @@ Provide ONLY the new section to append to the knowledge base. Be concise."""
         elif any(word in title.lower() + body.lower() for word in ['feature', 'enhancement', 'support']):
             category = 'feature_requests'
         
-        # Log escalation pattern (in production, this could go to metrics/analytics)
         logger.info(f"ESCALATION_PATTERN: category={category}, reason={reason}, title_keywords={title[:50]}")
-        
-        # Could be enhanced to send to CloudWatch metrics, analytics service, etc.
-        # Example: self.send_to_analytics(category, reason, issue_data)
 
     def send_to_slack(self, issue_number, issue_data, analysis):
         """Send issue context to Slack for team intervention"""
@@ -467,12 +651,15 @@ Provide ONLY the new section to append to the knowledge base. Be concise."""
             else:
                 body = truncated_body + f"...\n\n*[Truncated - <{issue_url}|View Full Issue>]*"
         
-        # Prepare bot's analysis with more detail
-        if bot_thoughts != 'ESCALATE' and bot_thoughts:
-            solution_text = f"*Bot's Assessment:*\n{bot_thoughts}"
+        # Prepare bot's analysis with potential solution
+        bot_response = analysis.get('response', 'No analysis available')
+        confidence = analysis.get('confidence', 'unknown')
+        can_solve = analysis.get('can_solve', False)
+        
+        if can_solve:
+            solution_text = f"*Bot's Solution (Posted):*\n{bot_response}\n\n*Confidence:* {confidence}"
         else:
-            confidence = analysis.get('confidence', 'unknown')
-            solution_text = f"*Bot Analysis:* Requires human expertise (Confidence: {confidence})"
+            solution_text = f"*Bot's Potential Solution:*\n{bot_response}\n\n*Confidence:* {confidence} - Escalated for human review"
         
         slack_message = {
             "text": f"🔔 Deequ Issue #{issue_number} Needs Team Attention",
@@ -550,7 +737,7 @@ Provide ONLY the new section to append to the knowledge base. Be concise."""
     def post_comment(self, issue_number, response_text):
         """Post comment to GitHub issue"""
         if not self.github_token:
-            logger.info(f"No GitHub token - would post: {response_text}")
+            logger.info("No GitHub token - skipping comment post")
             return
 
         # Add better disclaimer encouraging feedback
