@@ -233,7 +233,9 @@ Issue: {title}
             repo_context = ""
             
             for path_filter in search_paths:
-                search_url = f"https://api.github.com/search/code?q={'+'.join(search_terms)}+repo:{repo}+path:{path_filter}"
+                # Use only the first (most relevant) search term to avoid over-restrictive queries
+                primary_term = search_terms[0] if search_terms else "Distance"
+                search_url = f"https://api.github.com/search/code?q={primary_term}+repo:{repo}+path:{path_filter}"
                 logger.info(f"Searching path: {path_filter} with URL: {search_url}")
                 
                 response = self.safe_github_request(search_url, headers)
