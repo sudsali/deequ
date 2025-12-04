@@ -7,6 +7,7 @@ import boto3
 import logging
 import base64
 import datetime
+import time
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -16,17 +17,11 @@ class DeequIssueBot:
         self.github_token = os.getenv('GITHUB_TOKEN')
         self.slack_webhook = os.getenv('SLACK_WEBHOOK_URL')
         self.event_type = os.getenv('EVENT_TYPE', 'issues')
-        self.system_prompt = os.getenv('BOT_SYSTEM_PROMPT', self.get_default_prompt())
+        self.system_prompt = os.getenv('BOT_SYSTEM_PROMPT')
         self.bedrock = boto3.client('bedrock-runtime')
         self.model_id = os.getenv('BEDROCK_MODEL_ID')
         self.api_version = os.getenv('BEDROCK_API_VERSION')
-        
-        if not self.model_id:
-            raise ValueError("BEDROCK_MODEL_ID environment variable is required")
-        if not self.system_prompt or "not configured" in self.system_prompt:
-            raise ValueError("BOT_SYSTEM_PROMPT environment variable is required")
-        if not self.api_version:
-            raise ValueError("BEDROCK_API_VERSION environment variable is required")
+        self.current_search_terms = []  # Initialize search terms
         
         try:
             self.deequ_context = self.load_deequ_context()
@@ -236,7 +231,6 @@ Issue: {title}
                 api_calls_made += 1
                 
                 # Small delay to avoid rate limits
-                import time
                 time.sleep(5)
                 
                 if response:
@@ -275,7 +269,7 @@ Issue: {title}
                 search_directory_recursive('src/test')
             
             # AI summarization if content is too large
-            if len(repo_context) > 30000:
+            if len(repo_context) > 60000:
                 logger.info(f"Repository context too large ({len(repo_context)} chars), using AI to summarize...")
                 try:
                     # Use GitHub secret for summarization prompt
@@ -314,22 +308,6 @@ Issue: {title}
         except Exception as e:
             logger.error(f"Repository docs search failed: {e}")
             return ""
-            return ""
-
-    def get_file_content(self, file_url, headers):
-        """Get content of a specific file from GitHub API with rate limit handling"""
-        try:
-            response = self.safe_github_request(file_url, headers)
-            if response:
-                content = base64.b64decode(response.json()['content']).decode('utf-8')
-                return content
-        except Exception as e:
-            logger.error(f"Failed to get file content: {e}")
-        return ""
-
-    def get_default_prompt(self):
-        """Fallback when BOT_SYSTEM_PROMPT is not configured"""
-        return "System prompt not configured - BOT_SYSTEM_PROMPT environment variable required"
 
     def fetch_issue_with_comments(self, issue_number):
         """Fetch issue and recent comments for context"""
@@ -373,7 +351,7 @@ Issue: {title}
             comment_context = "\n\nRECENT CONVERSATION:\n"
             for comment in comments:
                 author = comment.get('user', {}).get('login', 'unknown')
-                comment_body = comment.get('body', '')[:500]  # Limit length
+                comment_body = comment.get('body', '')  # Keep full comment
                 comment_context += f"{author}: {comment_body}\n"
         
         is_followup = self.event_type == 'issue_comment'
@@ -434,71 +412,35 @@ DEEQU KNOWLEDGE BASE:
             self.log_escalation_pattern(issue_data, 'bedrock_api_failure')
             return self.fallback_analysis(issue_data)
 
-    def enhance_knowledge_base_with_validation(self, issue_data, analysis):
-        """Enhance KB only after validating customer sentiment"""
-        feedback = self.analyze_customer_feedback(issue_data)
-        
-        if feedback['sentiment'] == 'positive' and feedback['confidence'] > 0.4:
-            logger.info(f"Positive feedback detected (confidence: {feedback['confidence']:.2f})")
-            self.enhance_knowledge_base_if_needed(issue_data, analysis)
-        elif feedback['sentiment'] == 'negative':
-            logger.info(f"Negative feedback detected - not learning from this interaction")
-            self.log_escalation_pattern(issue_data, 'negative_customer_feedback')
-        else:
-            if analysis.get('should_escalate', True):
-                logger.info("Learning tentatively from unsolved issue - will validate with future feedback")
-                self.enhance_knowledge_base_if_needed(issue_data, analysis)
-            else:
-                logger.info("No feedback on solved issue - waiting for validation before learning")
-
-    def enhance_knowledge_base_if_needed(self, issue_data, analysis):
-        """Dynamically enhance KB if bot cannot solve the issue"""
-        if not analysis.get('should_escalate', True):
-            return  # No enhancement needed
-        
-        last_update_key = 'kb-last-update'
+    def update_knowledge_base_if_safe(self, issue_data, repo_context):
+        """Proactive KB update when we have new source code but still escalated"""
         try:
             bucket = os.getenv('KB_S3_BUCKET')
             if not bucket:
-                logger.warning("KB_S3_BUCKET not configured, skipping enhancement")
                 return
                 
+            # Rate limiting - max once per hour
             s3 = boto3.client('s3')
+            last_update_key = 'kb-proactive-update'
             
             try:
                 response = s3.head_object(Bucket=bucket, Key=last_update_key)
                 last_modified = response['LastModified']
-                if (datetime.datetime.now(datetime.timezone.utc) - last_modified).total_seconds() < 3600:  # 1 hour
-                    logger.info("KB enhancement rate limited")
+                if (datetime.datetime.now(datetime.timezone.utc) - last_modified).total_seconds() < 3600:
+                    logger.info("Proactive KB update rate limited")
                     return
-            except Exception as e:
-                logger.warning(f"No previous update file: {e}")  # No previous update file
+            except:
+                pass  # No previous update
             
-        except Exception as e:
-            logger.error(f"Rate limit check failed: {e}")
-            return
-        
-        title = issue_data.get('title', '')
-        body = issue_data.get('body', '')
-        issue_content = f"{title}\n{body}"
-        
-        if self.is_duplicate_content(issue_content):
-            logger.info("Similar content already exists in KB")
-            return
-        
-        key_terms = self.extract_key_terms(issue_content)
-        if not key_terms:
-            return
-        
-        repo_context = self.search_repository_docs(issue_data)
-        if repo_context:
-            self.update_knowledge_base(issue_content, repo_context)
+            issue_content = f"{issue_data.get('title', '')}\n{issue_data.get('body', '')}"
             
-            try:
+            if not self.is_duplicate_content(issue_content):
+                self.update_knowledge_base(issue_content, repo_context)
                 s3.put_object(Bucket=bucket, Key=last_update_key, Body=b'updated')
-                logger.info("KB enhanced with repository context")
-            except Exception as e:
-                logger.error(f"Failed to update rate limit marker: {e}")
+                logger.info("Proactive KB update completed")
+                
+        except Exception as e:
+            logger.error(f"Proactive KB update failed: {e}")
 
     def analyze_customer_feedback(self, issue_data):
         """Analyze follow-up comments using sentiment analysis for feedback on bot responses"""
@@ -541,24 +483,18 @@ DEEQU KNOWLEDGE BASE:
     def get_sentiment_score(self, text):
         """Use Bedrock to analyze sentiment of customer feedback"""
         try:
-            sentiment_prompt = f"""Analyze the sentiment of this GitHub comment about a technical solution.
-            
-Comment: "{text}"
-
-Respond with only a number between -1.0 (very negative) and 1.0 (very positive):
-- 1.0: Very positive (solution worked perfectly)
-- 0.5: Positive (solution helped)
-- 0.0: Neutral (no clear sentiment)
-- -0.5: Negative (solution didn't help)
-- -1.0: Very negative (solution made things worse)
-
-Number only:"""
+            sentiment_prompt = os.getenv('SENTIMENT_ANALYSIS_PROMPT')
+            if not sentiment_prompt:
+                logger.error("SENTIMENT_ANALYSIS_PROMPT not configured")
+                return None
+                
+            prompt = sentiment_prompt.replace('{text}', text)
 
             response = self.bedrock.invoke_model(
                 modelId=self.model_id,
                 body=json.dumps({
                     'anthropic_version': self.api_version,
-                    'messages': [{'role': 'user', 'content': sentiment_prompt}],
+                    'messages': [{'role': 'user', 'content': prompt}],
                     'max_tokens': 10,
                     'temperature': 0.1
                 })
@@ -581,20 +517,18 @@ Number only:"""
     def is_duplicate_content(self, issue_content):
         """Use Bedrock to check if KB already covers this issue"""
         try:
-            check_prompt = f"""Current Knowledge Base:
-{self.deequ_context[:2000]}
-
-New Issue:
-{issue_content[:500]}
-
-Does the knowledge base already contain sufficient information to help with this issue? 
-Respond with only "YES" or "NO"."""
+            check_prompt = os.getenv('DUPLICATE_CHECK_PROMPT')
+            if not check_prompt:
+                logger.error("DUPLICATE_CHECK_PROMPT not configured")
+                return False
+                
+            prompt = check_prompt.replace('{knowledge_base}', self.deequ_context).replace('{issue_content}', issue_content)
 
             response = self.bedrock.invoke_model(
                 modelId=self.model_id,
                 body=json.dumps({
                     'anthropic_version': self.api_version,
-                    'messages': [{'role': 'user', 'content': check_prompt}],
+                    'messages': [{'role': 'user', 'content': prompt}],
                     'max_tokens': 10,
                     'temperature': 0.1
                 })
@@ -623,7 +557,7 @@ Respond with only "YES" or "NO"."""
         if any(word in content_lower for word in ['error', 'exception', 'fail']):
             terms.extend(['error', 'exception'])
         
-        return terms[:5]  # Limit terms
+        return terms[:10]  # Keep more terms for better search
     
     def safe_s3_update(self, bucket, key, content):
         """Safely update S3 with conflict prevention"""
@@ -663,19 +597,18 @@ Respond with only "YES" or "NO"."""
                 logger.info("Skipping KB update - contains bot content")
                 return
             
-            enhancement_prompt = f"""Add missing information to help with this issue:
-
-Issue: {issue_content[:500]}
-
-Repository Context: {repo_context}
-
-Provide ONLY the new section to append to the knowledge base. Be concise."""
+            enhancement_prompt = os.getenv('KB_ENHANCEMENT_PROMPT')
+            if not enhancement_prompt:
+                logger.error("KB_ENHANCEMENT_PROMPT not configured")
+                return
+                
+            prompt = enhancement_prompt.replace('{issue_content}', issue_content).replace('{repo_context}', repo_context)
 
             response = self.bedrock.invoke_model(
                 modelId=self.model_id,
                 body=json.dumps({
                     'anthropic_version': self.api_version,
-                    'messages': [{'role': 'user', 'content': enhancement_prompt}],
+                    'messages': [{'role': 'user', 'content': prompt}],
                     'max_tokens': 800,
                     'temperature': 0.3
                 })
@@ -723,6 +656,36 @@ Provide ONLY the new section to append to the knowledge base. Be concise."""
         title = issue_data.get('title', '')
         issue_url = issue_data.get('html_url', '')
         
+        # Summarize issue body for Slack
+        issue_body = issue_data.get('body', '')
+        if len(issue_body) > 500:  # Only summarize if really large
+            try:
+                slack_prompt = os.getenv('SLACK_ISSUE_SUMMARY_PROMPT')
+                if slack_prompt:
+                    summary_prompt = slack_prompt.replace('{issue_title}', title).replace('{issue_body}', issue_body)
+                    
+                    response = self.bedrock.invoke_model(
+                        modelId=self.model_id,
+                        body=json.dumps({
+                            'anthropic_version': self.api_version,
+                            'messages': [{'role': 'user', 'content': summary_prompt}],
+                            'max_tokens': 200,
+                            'temperature': 0.1
+                        })
+                    )
+                    
+                    result = json.loads(response['body'].read())
+                    issue_summary = result['content'][0]['text'].strip()
+                    logger.info(f"Generated Slack issue summary: {len(issue_summary)} chars")
+                else:
+                    # Use full content if no summarization available
+                    issue_summary = issue_body
+            except Exception as e:
+                logger.error(f"Failed to summarize issue for Slack: {e}")
+                issue_summary = issue_body
+        else:
+            issue_summary = issue_body
+        
         bot_response = analysis.get('response', 'No analysis available')
         ai_category = analysis.get('category', 'unknown')
         should_escalate = analysis.get('should_escalate', True)
@@ -756,6 +719,13 @@ Provide ONLY the new section to append to the knowledge base. Be concise."""
                             "text": f"*Category:* {ai_category}"
                         }
                     ]
+                },
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"*Problem Summary:*\n{issue_summary}"
+                    }
                 },
                 {
                     "type": "section",
@@ -860,19 +830,19 @@ def main():
             
             if repo_context:
                 title = issue_data.get('title', '')
-                learning_prompt = f"""Based on this repository code, provide a correct and helpful answer to: {title}
-
-Repository Code:
-{repo_context}
-
-Provide a clear, accurate explanation of what this code does and how to use it."""
+                learning_prompt = os.getenv('LEARNING_MODE_PROMPT')
+                if not learning_prompt:
+                    logger.error("LEARNING_MODE_PROMPT not configured")
+                    return
+                    
+                prompt = learning_prompt.replace('{title}', title).replace('{repo_context}', repo_context)
 
                 try:
                     response = bot.bedrock.invoke_model(
                         modelId=bot.model_id,
                         body=json.dumps({
                             'anthropic_version': bot.api_version,
-                            'messages': [{'role': 'user', 'content': learning_prompt}],
+                            'messages': [{'role': 'user', 'content': prompt}],
                             'max_tokens': 1000,
                             'temperature': 0.3
                         })
@@ -910,6 +880,12 @@ We appreciate your patience and will get back to you as soon as possible."""
         
         bot.post_comment(issue_number, escalation_comment)
         bot.send_to_slack(issue_number, issue_data, analysis)
+        
+        # Proactive learning: if we found source code but still escalated, learn from it
+        enhanced_context = bot.get_enhanced_context(issue_data)
+        if enhanced_context and len(enhanced_context) > len(bot.deequ_context) + 1000:  # New content found
+            bot.update_knowledge_base_if_safe(issue_data, enhanced_context)
+        
         logger.info("Posted acknowledgment comment and escalated to team via Slack")
 
 if __name__ == "__main__":

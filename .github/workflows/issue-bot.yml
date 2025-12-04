@@ -49,5 +49,10 @@ jobs:
           REPO_SEARCH_PROMPT: ${{ secrets.REPO_SEARCH_PROMPT }}
           DEEQU_KNOWLEDGE_BASE: ${{ secrets.DEEQU_KNOWLEDGE_BASE }}
           SUMMARIZATION_PROMPT: ${{ secrets.SUMMARIZATION_PROMPT }}
+          SLACK_ISSUE_SUMMARY_PROMPT: ${{ secrets.SLACK_ISSUE_SUMMARY_PROMPT }}
+          SENTIMENT_ANALYSIS_PROMPT: ${{ secrets.SENTIMENT_ANALYSIS_PROMPT }}
+          DUPLICATE_CHECK_PROMPT: ${{ secrets.DUPLICATE_CHECK_PROMPT }}
+          KB_ENHANCEMENT_PROMPT: ${{ secrets.KB_ENHANCEMENT_PROMPT }}
+          LEARNING_MODE_PROMPT: ${{ secrets.LEARNING_MODE_PROMPT }}
         run: |
           python src/scripts/issue-bot.py $ISSUE_NUMBER
