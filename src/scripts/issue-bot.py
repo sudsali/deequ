@@ -37,21 +37,25 @@ class DeequIssueBot:
     def load_deequ_context(self):
         """Load Deequ knowledge base from S3 or environment variable"""
         try:
-            s3 = boto3.client('s3')
             bucket = os.getenv('KB_S3_BUCKET')
             key = os.getenv('KB_S3_KEY')
             
+            if not bucket or not key:
+                raise ValueError("KB_S3_BUCKET and KB_S3_KEY must be configured")
+            
+            s3 = boto3.client('s3')
             try:
                 s3.head_bucket(Bucket=bucket)
-            except:
-                logger.warning(f"S3 bucket {bucket} not accessible, using fallback")
+            except Exception as e:
+                logger.warning(f"S3 bucket {bucket} not accessible: {e}")
                 raise Exception("S3 bucket not accessible")
             
             response = s3.get_object(Bucket=bucket, Key=key)
             kb_content = response['Body'].read().decode('utf-8')
             logger.info(f"Loaded {len(kb_content)} chars from S3 KB")
             return kb_content
-        except:
+        except Exception as e:
+            logger.warning(f"S3 KB load failed: {e}")
             kb_content = os.getenv('DEEQU_KNOWLEDGE_BASE')
             if kb_content:
                 logger.info("Using fallback KB from environment")
@@ -63,11 +67,20 @@ class DeequIssueBot:
     def safe_github_request(self, url, headers):
         """Make GitHub API request with rate limit handling"""
         try:
+            logger.info(f"Making GitHub API request to: {url}")
             response = requests.get(url, headers=headers, timeout=10)
+            logger.info(f"GitHub API response: {response.status_code}")
+            
             if response.status_code == 403:
+                logger.error(f"GitHub API 403 error: {response.text}")
                 if 'rate limit' in response.text.lower():
                     logger.warning("GitHub API rate limited - skipping repository search")
                     return None
+            elif response.status_code == 401:
+                logger.error("GitHub API authentication failed - check GITHUB_TOKEN")
+            elif response.status_code != 200:
+                logger.error(f"GitHub API error {response.status_code}: {response.text}")
+                
             return response if response.status_code == 200 else None
         except Exception as e:
             logger.error(f"GitHub API request failed: {e}")
@@ -209,15 +222,23 @@ Issue: {title}
             
             for term in search_terms[:3]:
                 search_url = f"https://api.github.com/search/code?q={term}+OR+{term.capitalize()}+repo:{repo}+extension:scala"
+                logger.info(f"Searching with URL: {search_url}")
                 
                 response = self.safe_github_request(search_url, headers)
                 if response:
-                    results = response.json().get('items', [])[:2]
+                    response_data = response.json()
+                    results = response_data.get('items', [])[:2]
+                    logger.info(f"Search response status: {response.status_code}, items found: {len(results)}")
+                    
+                    if response.status_code != 200:
+                        logger.error(f"GitHub API error: {response.status_code} - {response_data}")
                     
                     for result in results:
                         file_content = self.get_file_content(result['url'], headers)
                         if file_content:
                             repo_context += f"\n### {result['name']}\n{file_content}\n"
+                else:
+                    logger.error(f"Failed to get response from GitHub API for term: {term}")
                 
                 if len(repo_context) > 5000:
                     break
@@ -370,8 +391,12 @@ DEEQU KNOWLEDGE BASE:
         
         last_update_key = 'kb-last-update'
         try:
-            s3 = boto3.client('s3')
             bucket = os.getenv('KB_S3_BUCKET')
+            if not bucket:
+                logger.warning("KB_S3_BUCKET not configured, skipping enhancement")
+                return
+                
+            s3 = boto3.client('s3')
             
             try:
                 response = s3.head_object(Bucket=bucket, Key=last_update_key)
@@ -379,8 +404,8 @@ DEEQU KNOWLEDGE BASE:
                 if (datetime.datetime.now(datetime.timezone.utc) - last_modified).total_seconds() < 3600:  # 1 hour
                     logger.info("KB enhancement rate limited")
                     return
-            except:
-                pass  # No previous update file
+            except Exception as e:
+                logger.warning(f"No previous update file: {e}")  # No previous update file
             
         except Exception as e:
             logger.error(f"Rate limit check failed: {e}")
@@ -398,7 +423,7 @@ DEEQU KNOWLEDGE BASE:
         if not key_terms:
             return
         
-        repo_context = self.search_repository_for_learning(key_terms)
+        repo_context = self.search_repository_docs(issue_data)
         if repo_context:
             self.update_knowledge_base(issue_content, repo_context)
             
@@ -411,18 +436,17 @@ DEEQU KNOWLEDGE BASE:
     def analyze_customer_feedback(self, issue_data):
         """Analyze follow-up comments using sentiment analysis for feedback on bot responses"""
         comments = issue_data.get('recent_comments', [])
-        bot_comment_found = False
-        feedback_scores = []
+        bot_has_responded = any(c.get('user', {}).get('login') == 'github-actions[bot]' for c in comments)
         
+        if not bot_has_responded:
+            return {'sentiment': 'neutral', 'confidence': 0}
+        
+        feedback_scores = []
         for comment in comments:
             author = comment.get('user', {}).get('login', '')
             body = comment.get('body', '')
             
-            if author == 'github-actions[bot]':
-                bot_comment_found = True
-                continue
-                
-            if bot_comment_found and len(body.strip()) > 10:
+            if author != 'github-actions[bot]' and len(body.strip()) > 10:
                 sentiment_score = self.get_sentiment_score(body)
                 if sentiment_score is not None:
                     feedback_scores.append(sentiment_score)
@@ -593,7 +617,8 @@ Provide ONLY the new section to append to the knowledge base. Be concise."""
             enhanced_kb = f"{self.deequ_context}\n\n{new_section}"
             
             bucket = os.getenv('KB_S3_BUCKET')
-            if self.safe_s3_update(bucket, os.getenv('KB_S3_KEY'), enhanced_kb):
+            key = os.getenv('KB_S3_KEY')
+            if bucket and key and self.safe_s3_update(bucket, key, enhanced_kb):
                 self.deequ_context = enhanced_kb
                 logger.info("Knowledge base updated successfully")
             
