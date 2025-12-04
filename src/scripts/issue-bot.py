@@ -235,6 +235,10 @@ Issue: {title}
                 response = self.safe_github_request(dir_url, headers)
                 api_calls_made += 1
                 
+                # Small delay to avoid rate limits
+                import time
+                time.sleep(0.1)
+                
                 if response:
                     try:
                         items = response.json()
@@ -250,6 +254,7 @@ Issue: {title}
                                     logger.info(f"Found matching file: {item['name']} at {dir_path}")
                                     file_response = self.safe_github_request(item['url'], headers)
                                     api_calls_made += 1
+                                    time.sleep(0.1)  # Rate limit protection
                                     
                                     if file_response:
                                         file_data = file_response.json()
