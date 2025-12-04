@@ -48,5 +48,6 @@ jobs:
           BOT_SYSTEM_PROMPT: ${{ secrets.BOT_SYSTEM_PROMPT }}
           REPO_SEARCH_PROMPT: ${{ secrets.REPO_SEARCH_PROMPT }}
           DEEQU_KNOWLEDGE_BASE: ${{ secrets.DEEQU_KNOWLEDGE_BASE }}
+          SUMMARIZATION_PROMPT: ${{ secrets.SUMMARIZATION_PROMPT }}
         run: |
           python src/scripts/issue-bot.py $ISSUE_NUMBER
