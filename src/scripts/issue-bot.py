@@ -237,7 +237,7 @@ Issue: {title}
                 
                 # Small delay to avoid rate limits
                 import time
-                time.sleep(0.1)
+                time.sleep(5)
                 
                 if response:
                     try:
@@ -254,7 +254,7 @@ Issue: {title}
                                     logger.info(f"Found matching file: {item['name']} at {dir_path}")
                                     file_response = self.safe_github_request(item['url'], headers)
                                     api_calls_made += 1
-                                    time.sleep(0.1)  # Rate limit protection
+                                    time.sleep(5)  # Rate limit protection
                                     
                                     if file_response:
                                         file_data = file_response.json()
@@ -278,14 +278,24 @@ Issue: {title}
             if len(repo_context) > 30000:
                 logger.info(f"Repository context too large ({len(repo_context)} chars), using AI to summarize...")
                 try:
-                    summary_prompt = f"Summarize this code repository content, focusing on the key classes, methods, and relationships relevant to the search terms {search_terms}:\n\n{repo_context}"
+                    # Use GitHub secret for summarization prompt
+                    issue_title = issue_data.get('title', '')
+                    base_prompt = os.getenv('SUMMARIZATION_PROMPT')
+                    
+                    if base_prompt:
+                        # Replace placeholders in the prompt
+                        summary_prompt = base_prompt.replace('{issue_title}', issue_title).replace('{search_terms}', str(search_terms)).replace('{repo_context}', repo_context)
+                    else:
+                        logger.error("SUMMARIZATION_PROMPT not found, using truncation")
+                        repo_context = repo_context[:15000] + "\n\n[Content truncated - no summarization prompt available]"
+                        return repo_context
                     
                     response = self.bedrock.invoke_model(
                         modelId=self.model_id,
                         body=json.dumps({
                             'anthropic_version': self.api_version,
                             'messages': [{'role': 'user', 'content': summary_prompt}],
-                            'max_tokens': 2000,
+                            'max_tokens': 8000,
                             'temperature': 0.1
                         })
                     )
