@@ -219,30 +219,60 @@ Issue: {title}
             headers = {'Authorization': f'token {self.github_token}'} if self.github_token else {}
             repo = os.getenv('GITHUB_REPOSITORY')
             repo_context = ""
+            api_calls_made = 0
+            max_api_calls = 20  # Rate limit protection
             
-            for term in search_terms[:3]:
-                search_url = f"https://api.github.com/search/code?q={term}+OR+{term.capitalize()}+repo:{repo}+extension:scala"
-                logger.info(f"Searching with URL: {search_url}")
+            def search_directory_recursive(dir_path, depth=0, max_depth=6):
+                """Recursively search directory for matching files"""
+                nonlocal api_calls_made, repo_context
                 
-                response = self.safe_github_request(search_url, headers)
+                if depth > max_depth or len(repo_context) > 15000 or api_calls_made >= max_api_calls:
+                    return
+                
+                dir_url = f"https://api.github.com/repos/{repo}/contents/{dir_path}"
+                logger.info(f"Searching directory: {dir_path} (depth {depth}, API calls: {api_calls_made})")
+                
+                response = self.safe_github_request(dir_url, headers)
+                api_calls_made += 1
+                
                 if response:
-                    response_data = response.json()
-                    results = response_data.get('items', [])[:2]
-                    logger.info(f"Search response status: {response.status_code}, items found: {len(results)}")
-                    
-                    if response.status_code != 200:
-                        logger.error(f"GitHub API error: {response.status_code} - {response_data}")
-                    
-                    for result in results:
-                        file_content = self.get_file_content(result['url'], headers)
-                        if file_content:
-                            repo_context += f"\n### {result['name']}\n{file_content}\n"
-                else:
-                    logger.error(f"Failed to get response from GitHub API for term: {term}")
-                
-                if len(repo_context) > 5000:
-                    break
+                    try:
+                        items = response.json()
+                        
+                        for item in items:
+                            if api_calls_made >= max_api_calls:
+                                logger.warning(f"Hit API call limit ({max_api_calls}), stopping search")
+                                return
+                                
+                            if item['type'] == 'file' and item['name'].endswith('.scala'):
+                                # Check if filename matches search terms
+                                if any(term.lower() in item['name'].lower() for term in search_terms):
+                                    logger.info(f"Found matching file: {item['name']} at {dir_path}")
+                                    file_response = self.safe_github_request(item['url'], headers)
+                                    api_calls_made += 1
+                                    
+                                    if file_response:
+                                        file_data = file_response.json()
+                                        content = base64.b64decode(file_data['content']).decode('utf-8')
+                                        repo_context += f"\n### {file_data['name']}\n{content}\n"
+                                        logger.info(f"Successfully loaded {file_data['name']} ({len(content)} chars)")
+                                        
+                                        if len(repo_context) > 15000:
+                                            return
+                            
+                            elif item['type'] == 'dir' and api_calls_made < max_api_calls:
+                                # Recursively search subdirectories
+                                search_directory_recursive(f"{dir_path}/{item['name']}", depth + 1, max_depth)
+                                
+                    except Exception as e:
+                        logger.error(f"Failed to process directory {dir_path}: {e}")
             
+            # Search both main and test directories
+            search_directory_recursive('src/main')
+            if len(repo_context) < 15000 and api_calls_made < max_api_calls:
+                search_directory_recursive('src/test')
+            
+            logger.info(f"Total search results: {len(repo_context)} chars, API calls made: {api_calls_made}")
             return repo_context
             
         except Exception as e:
@@ -466,7 +496,10 @@ DEEQU KNOWLEDGE BASE:
     def has_negative_feedback_requiring_learning(self, issue_data):
         """Check if bot needs to learn from negative feedback"""
         feedback = self.analyze_customer_feedback(issue_data)
-        return feedback['sentiment'] == 'negative' and feedback['confidence'] > 0.4
+        logger.info(f"Feedback analysis: {feedback}")
+        result = feedback['sentiment'] == 'negative' and feedback['confidence'] > 0.4
+        logger.info(f"Negative feedback requiring learning: {result}")
+        return result
     
     def get_sentiment_score(self, text):
         """Use Bedrock to analyze sentiment of customer feedback"""
