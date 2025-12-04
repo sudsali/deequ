@@ -226,7 +226,7 @@ Issue: {title}
                 """Recursively search directory for matching files"""
                 nonlocal api_calls_made, repo_context
                 
-                if depth > max_depth or len(repo_context) > 15000 or api_calls_made >= max_api_calls:
+                if depth > max_depth or api_calls_made >= max_api_calls:
                     return
                 
                 dir_url = f"https://api.github.com/repos/{repo}/contents/{dir_path}"
@@ -242,7 +242,7 @@ Issue: {title}
                         for item in items:
                             if api_calls_made >= max_api_calls:
                                 logger.warning(f"Hit API call limit ({max_api_calls}), stopping search")
-                                return
+                                break
                                 
                             if item['type'] == 'file' and item['name'].endswith('.scala'):
                                 # Check if filename matches search terms
@@ -256,9 +256,6 @@ Issue: {title}
                                         content = base64.b64decode(file_data['content']).decode('utf-8')
                                         repo_context += f"\n### {file_data['name']}\n{content}\n"
                                         logger.info(f"Successfully loaded {file_data['name']} ({len(content)} chars)")
-                                        
-                                        if len(repo_context) > 15000:
-                                            return
                             
                             elif item['type'] == 'dir' and api_calls_made < max_api_calls:
                                 # Recursively search subdirectories
@@ -269,14 +266,39 @@ Issue: {title}
             
             # Search both main and test directories
             search_directory_recursive('src/main')
-            if len(repo_context) < 15000 and api_calls_made < max_api_calls:
+            if api_calls_made < max_api_calls:
                 search_directory_recursive('src/test')
+            
+            # AI summarization if content is too large
+            if len(repo_context) > 30000:
+                logger.info(f"Repository context too large ({len(repo_context)} chars), using AI to summarize...")
+                try:
+                    summary_prompt = f"Summarize this code repository content, focusing on the key classes, methods, and relationships relevant to the search terms {search_terms}:\n\n{repo_context}"
+                    
+                    response = self.bedrock.invoke_model(
+                        modelId=self.model_id,
+                        body=json.dumps({
+                            'anthropic_version': self.api_version,
+                            'messages': [{'role': 'user', 'content': summary_prompt}],
+                            'max_tokens': 2000,
+                            'temperature': 0.1
+                        })
+                    )
+                    
+                    result = json.loads(response['body'].read())
+                    repo_context = result['content'][0]['text'].strip()
+                    logger.info(f"AI summarized repository context to {len(repo_context)} chars")
+                    
+                except Exception as e:
+                    logger.error(f"AI summarization failed: {e}, using truncation fallback")
+                    repo_context = repo_context[:15000] + "\n\n[Content truncated due to size]"
             
             logger.info(f"Total search results: {len(repo_context)} chars, API calls made: {api_calls_made}")
             return repo_context
             
         except Exception as e:
             logger.error(f"Repository docs search failed: {e}")
+            return ""
             return ""
 
     def get_file_content(self, file_url, headers):
