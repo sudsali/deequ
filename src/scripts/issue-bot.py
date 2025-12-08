@@ -394,6 +394,7 @@ DEEQU KNOWLEDGE BASE:
             ai_response = result['content'][0]['text'].strip()
             
             should_escalate = "ESCALATE_TO_TEAM" in ai_response
+            should_close = "CLOSE_ISSUE" in ai_response
             
             logger.info(f"AI Response - should_escalate: {should_escalate}")
             if should_escalate:
@@ -404,6 +405,7 @@ DEEQU KNOWLEDGE BASE:
             return {
                 'response': ai_response,
                 'should_escalate': should_escalate,
+                'should_close': should_close,
                 'category': 'question'
             }
                 
@@ -773,8 +775,38 @@ DEEQU KNOWLEDGE BASE:
         return {
             "response": "ESCALATE_TO_TEAM",
             "should_escalate": True,
+            "should_close": False,
             "category": "question"
         }
+
+    def close_issue(self, issue_number, reason_comment):
+        """Close GitHub issue with comment"""
+        if not self.github_token:
+            logger.info("No GitHub token - skipping issue close")
+            return
+
+        repo = os.getenv('GITHUB_REPOSITORY')
+        
+        # Post comment first
+        comment_url = f"https://api.github.com/repos/{repo}/issues/{issue_number}/comments"
+        headers = {
+            'Authorization': f'token {self.github_token}',
+            'Accept': 'application/vnd.github.v3+json'
+        }
+
+        try:
+            requests.post(comment_url, headers=headers, json={'body': reason_comment}, timeout=30)
+            
+            # Close the issue
+            close_url = f"https://api.github.com/repos/{repo}/issues/{issue_number}"
+            response = requests.patch(close_url, headers=headers, json={'state': 'closed'}, timeout=30)
+            
+            if response.status_code == 200:
+                logger.info(f"Closed irrelevant issue #{issue_number}")
+            else:
+                logger.error(f"Failed to close issue: {response.status_code}")
+        except Exception as e:
+            logger.error(f"Error closing issue: {e}")
 
     def post_comment(self, issue_number, response_text):
         """Post comment to GitHub issue"""
@@ -868,7 +900,16 @@ I apologize for the earlier incorrect response. I've updated my knowledge base t
 
     analysis = bot.analyze_with_bedrock(issue_data)
     
-    if not analysis.get('should_escalate', True):
+    if analysis.get('should_close', False):
+        close_comment = """This issue is not related to the Deequ data quality library and has been closed.
+
+For Deequ-specific questions about data quality validation, Apache Spark integration, DQDL, or library usage, please feel free to open a new issue with relevant details.
+
+Thank you for your understanding."""
+        
+        bot.close_issue(issue_number, close_comment)
+        logger.info("Closed irrelevant issue")
+    elif not analysis.get('should_escalate', True):
         bot.post_comment(issue_number, analysis['response'])
         logger.info("Bot provided solution")
     else:
