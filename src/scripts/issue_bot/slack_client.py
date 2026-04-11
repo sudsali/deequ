@@ -16,25 +16,19 @@ class SlackClient:
         if self._dry_run:
             logger.info(f"[DRY RUN] Slack escalation for #{number}")
             return
-        self._send({
-            "text": f"Deequ #{number} needs attention",
-            "blocks": [
-                {"type": "header", "text": {"type": "plain_text", "text": f"Deequ #{number} Escalation"}},
-                {"type": "section", "fields": [
-                    {"type": "mrkdwn", "text": f"*Issue:* <{url}|{title}>"},
-                    {"type": "mrkdwn", "text": f"*Category:* {category}"},
-                ]},
-                {"type": "section", "text": {"type": "mrkdwn", "text": f"*Summary:*\n{summary[:500]}"}},
-                {"type": "actions", "elements": [
-                    {"type": "button", "text": {"type": "plain_text", "text": "View on GitHub"}, "url": url, "style": "primary"}
-                ]},
-            ],
-        })
+        text = (
+            f"*Deequ #{number} - Escalation*\n"
+            f"*Issue:* <{url}|{title}>\n"
+            f"*Category:* {category}\n\n"
+            f"*Bot Analysis:*\n{summary[:500] if summary else 'No AI analysis available'}\n\n"
+            f"<{url}|View on GitHub>"
+        )
+        self._send({"text": text})
 
     def send_error(self, message):
         if not self._enabled:
             return
-        self._send({"text": f":warning: Deequ Bot Error: {message}"})
+        self._send({"text": f"Deequ Bot Error: {message}"})
 
     def _send(self, payload):
         try:

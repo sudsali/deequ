@@ -130,7 +130,7 @@ def analyze():
 
     parsed = _parse_response(raw, is_pr)
 
-    if parsed.get("needs_search") and cfg.enable_repo_search and not is_pr:
+    if parsed.get("needs_search") and cfg.enable_repo_search:
         snippets = _fetch_repo_snippets(gh, parsed.get("search_terms", ""), cfg)
         if snippets:
             enriched_context = kb.build_context(issue_text, snippets)
@@ -173,13 +173,7 @@ def act():
         logger.info(f"Skip #{number}: {result.get('reason')}")
         return
 
-    ts = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
-    kind = "PR" if is_pr else "Issue"
-    footer = (
-        f"\n\n---\n*{kind} analyzed with AI assistance "
-        f"(model: `{model_id}`, prompt: `{prompt_id}`, ts: `{ts}`). "
-        f"If this doesn't help, please reply and a maintainer will assist.*"
-    )
+    footer = "\n\n---\n*This response was generated using AI and may not be fully accurate. If this doesn't help, please reply and a maintainer will follow up.*"
 
     if action == "RESPOND":
         safe = sanitize(response)
@@ -204,11 +198,17 @@ def act():
                 "The maintainer team has been notified and will take over." + footer
             )
         else:
-            ack = (
-                "Thank you for this submission.\n\n"
-                "This has been flagged for review by our maintainer team. "
-                "We'll get back to you as soon as possible." + footer
-            )
+            if response:
+                ack = (
+                    response + "\n\n"
+                    "This has also been flagged for our maintainer team to review." + footer
+                )
+            else:
+                ack = (
+                    "Thank you for reporting this.\n\n"
+                    "This has been flagged for review by our maintainer team. "
+                    "We'll get back to you as soon as possible." + footer
+                )
         gh.post_comment(number, ack)
         gh.add_labels(number, labels)
         slack.send_escalation(number, title, html_url, "escalation", response or "No AI analysis available")
