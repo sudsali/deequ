@@ -211,7 +211,7 @@ def act():
                 )
         gh.post_comment(number, ack)
         gh.add_labels(number, labels)
-        slack.send_escalation(number, title, html_url, "escalation", response or "No AI analysis available")
+        slack.send_escalation(number, title, html_url, labels)
         logger.info(f"Escalated #{number}")
 
     if action == "CLOSE" and cfg.enable_auto_close and not is_pr:

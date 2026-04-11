@@ -10,18 +10,18 @@ class SlackClient:
         self._enabled = cfg.enable_slack
         self._dry_run = cfg.dry_run
 
-    def send_escalation(self, number, title, url, category, summary):
+    def send_escalation(self, number, title, url, labels):
         if not self._enabled:
             return
         if self._dry_run:
             logger.info(f"[DRY RUN] Slack escalation for #{number}")
             return
+        label_text = ", ".join(labels) if labels else "none"
         text = (
-            f"*Deequ #{number} - Escalation*\n"
-            f"*Issue:* <{url}|{title}>\n"
-            f"*Category:* {category}\n\n"
-            f"*Bot Analysis:*\n{summary[:500] if summary else 'No AI analysis available'}\n\n"
-            f"<{url}|View on GitHub>"
+            f"*Deequ #{number} needs attention*\n"
+            f"<{url}|{title}>\n"
+            f"Labels: {label_text}\n"
+            f"Bot posted analysis on the issue."
         )
         self._send({"text": text})
 
