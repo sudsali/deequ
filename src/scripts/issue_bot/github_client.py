@@ -55,6 +55,34 @@ class GitHubClient:
                 return True
         return False
 
+    def search_code_local(self, terms, src_dir="src/main/scala", max_files=5):
+        """Search the local checkout for matching Scala files. Falls back to GitHub API."""
+        import subprocess
+        results = []
+        for term in terms.split()[:3]:
+            try:
+                proc = subprocess.run(
+                    ["grep", "-rl", "--include=*.scala", term, src_dir],
+                    capture_output=True, text=True, timeout=10,
+                )
+                for path in proc.stdout.strip().split("\n"):
+                    if path and path not in results:
+                        results.append(path)
+            except Exception:
+                continue
+        return results[:max_files]
+
+    def read_local_file(self, path, max_chars=5000):
+        """Read a file from the local checkout."""
+        try:
+            with open(path, "r", errors="replace") as f:
+                content = f.read()
+            if len(content) > max_chars:
+                return content[:max_chars] + "\n... (truncated)"
+            return content
+        except Exception:
+            return ""
+
     def search_code(self, query, repo_override=None):
         repo = repo_override or self._repo
         url = f"https://api.github.com/search/code?q={requests.utils.quote(f'{query} repo:{repo}')}&per_page=5"

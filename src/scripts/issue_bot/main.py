@@ -304,6 +304,15 @@ def _format_comments(comments):
 def _fetch_repo_snippets(gh, search_terms, cfg):
     if not search_terms:
         return ""
+    local_files = gh.search_code_local(search_terms)
+    if local_files:
+        snippets = []
+        for path in local_files[:cfg.max_github_search_results]:
+            content = gh.read_local_file(path)
+            if content:
+                snippets.append(f"### {path}\n```scala\n{content}\n```")
+        if snippets:
+            return "\n\n".join(snippets)
     items = gh.search_code(search_terms, repo_override=cfg.upstream_repo)
     snippets = []
     for item in items[:cfg.max_github_search_results]:
@@ -312,7 +321,7 @@ def _fetch_repo_snippets(gh, search_terms, cfg):
         if content:
             if len(content) > 5000:
                 content = content[:5000] + "\n... (truncated)"
-            snippets.append(f"### {path}\n```\n{content}\n```")
+            snippets.append(f"### {path}\n```scala\n{content}\n```")
     return "\n\n".join(snippets)
 
 
