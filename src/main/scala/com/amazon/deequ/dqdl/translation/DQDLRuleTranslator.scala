@@ -1,5 +1,5 @@
 /**
- * Copyright 2025 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ * Copyright 2026 Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License"). You may not
  * use this file except in compliance with the License. A copy of the License
@@ -16,7 +16,8 @@
 
 package com.amazon.deequ.dqdl.translation
 
-import com.amazon.deequ.dqdl.model.{DeequExecutableRule, ExecutableRule, UnsupportedExecutableRule}
+import com.amazon.deequ.analyzers.FilteredRowOutcome
+import com.amazon.deequ.dqdl.model.{CompositeExecutableRule, DeequExecutableRule, ExecutableRule, UnsupportedExecutableRule}
 import com.amazon.deequ.dqdl.translation.rules.ColumnCorrelationRule
 import com.amazon.deequ.dqdl.translation.rules.CompletenessRule
 import com.amazon.deequ.dqdl.translation.rules.CustomSqlRule
@@ -26,6 +27,7 @@ import com.amazon.deequ.dqdl.translation.rules.IsCompleteRule
 import com.amazon.deequ.dqdl.translation.rules.IsPrimaryKeyRule
 import com.amazon.deequ.dqdl.translation.rules.IsUniqueRule
 import com.amazon.deequ.dqdl.translation.rules.MeanRule
+import com.amazon.deequ.dqdl.translation.rules.ColumnCountRule
 import com.amazon.deequ.dqdl.translation.rules.RowCountRule
 import com.amazon.deequ.dqdl.translation.rules.StandardDeviationRule
 import com.amazon.deequ.dqdl.translation.rules.SumRule
@@ -33,8 +35,19 @@ import com.amazon.deequ.dqdl.translation.rules.UniqueValueRatioRule
 import com.amazon.deequ.dqdl.translation.rules.UniquenessRule
 import com.amazon.deequ.dqdl.translation.rules.ColumnLengthRule
 import com.amazon.deequ.dqdl.translation.rules.ColumnExistsRule
+import com.amazon.deequ.dqdl.translation.rules.ColumnValuesRule
+import com.amazon.deequ.dqdl.translation.rules.RowCountMatchRule
+import com.amazon.deequ.dqdl.translation.rules.ReferentialIntegrityRule
+import com.amazon.deequ.dqdl.translation.rules.DatasetMatchRule
+import com.amazon.deequ.dqdl.translation.rules.DataFreshnessRule
+import com.amazon.deequ.dqdl.translation.rules.ColumnDataTypeRule
+import com.amazon.deequ.dqdl.translation.rules.ColumnNamesMatchPatternRule
+import com.amazon.deequ.dqdl.translation.rules.SchemaMatchRule
+import com.amazon.deequ.dqdl.translation.rules.AggregateMatchRule
+import com.amazon.deequ.dqdl.translation.rules.CustomSqlRowLevelRule
 import software.amazon.glue.dqdl.model.DQRule
 import software.amazon.glue.dqdl.model.DQRuleset
+import software.amazon.glue.dqdl.model.condition.number.NumberBasedCondition
 
 import scala.jdk.CollectionConverters.collectionAsScalaIterableConverter
 
@@ -48,6 +61,7 @@ object DQDLRuleTranslator {
   // Map from rule type to its converter implementation.
   private val converters = Map[String, DQDLRuleConverter](
     "RowCount" -> new RowCountRule,
+    "ColumnCount" -> new ColumnCountRule,
     "Completeness" -> new CompletenessRule,
     "IsComplete" -> new IsCompleteRule,
     "Uniqueness" -> new UniquenessRule,
@@ -62,7 +76,8 @@ object DQDLRuleTranslator {
     "CustomSql" -> new CustomSqlRule,
     "IsPrimaryKey" -> new IsPrimaryKeyRule,
     "ColumnLength" -> new ColumnLengthRule,
-    "ColumnExists" -> new ColumnExistsRule
+    "ColumnExists" -> new ColumnExistsRule,
+    "ColumnValues" -> new ColumnValuesRule
   )
 
   /**
@@ -78,9 +93,55 @@ object DQDLRuleTranslator {
   }
 
   private[dqdl] def toExecutableRule(rule: DQRule): ExecutableRule = {
-    translateRule(rule) match {
-      case Right(deequExecutableRule) => deequExecutableRule
-      case Left(message) => UnsupportedExecutableRule(rule, Some(message))
+    rule.getRuleType match {
+      case "ColumnDataType" =>
+        ColumnDataTypeRule.toExecutableRule(rule, FilteredRowOutcome.TRUE) match {
+          case Right(executableRule) => executableRule
+          case Left(message) => UnsupportedExecutableRule(rule, Some(message))
+        }
+      case "Composite" =>
+        // Validate nested rules exist
+        if (rule.getNestedRules == null || rule.getNestedRules.isEmpty) {
+          UnsupportedExecutableRule(rule, Some("Composite rule must have at least one nested rule"))
+        } else {
+          // Recursively translate nested rules
+          val nestedExecutableRules = rule.getNestedRules.asScala.map(toExecutableRule).toSeq
+          CompositeExecutableRule(rule, nestedExecutableRules, rule.getOperator)
+        }
+      case "DataFreshness" =>
+        DataFreshnessRule.toExecutableRule(rule, FilteredRowOutcome.TRUE) match {
+          case Right(executableRule) => executableRule
+          case Left(message) => UnsupportedExecutableRule(rule, Some(message))
+        }
+      case "RowCountMatch" => RowCountMatchRule.toExecutableRule(rule)
+      case "ColumnNamesMatchPattern" => ColumnNamesMatchPatternRule.toExecutableRule(rule)
+      case "AggregateMatch" => AggregateMatchRule.toExecutableRule(rule)
+      case "ReferentialIntegrity" =>
+        ReferentialIntegrityRule.toExecutableRule(rule) match {
+          case Right(executableRule) => executableRule
+          case Left(message) => UnsupportedExecutableRule(rule, Some(message))
+        }
+      case "SchemaMatch" => SchemaMatchRule.toExecutableRule(rule)
+      case "DatasetMatch" =>
+        DatasetMatchRule.toExecutableRule(rule) match {
+          case Right(executableRule) => executableRule
+          case Left(message) => UnsupportedExecutableRule(rule, Some(message))
+        }
+      case "CustomSql" =>
+        rule.getCondition match {
+          case _: NumberBasedCondition =>
+            translateRule(rule) match {
+              case Right(deequExecutableRule) => deequExecutableRule
+              case Left(message) => UnsupportedExecutableRule(rule, Some(message))
+            }
+          case _ =>
+            CustomSqlRowLevelRule.toExecutableRule(rule)
+        }
+      case _ =>
+        translateRule(rule) match {
+          case Right(deequExecutableRule) => deequExecutableRule
+          case Left(message) => UnsupportedExecutableRule(rule, Some(message))
+        }
     }
   }
 

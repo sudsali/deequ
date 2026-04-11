@@ -17,6 +17,7 @@
 package com.amazon.deequ.dqdl.translation
 
 import com.amazon.deequ.dqdl.model.DeequExecutableRule
+import com.amazon.deequ.dqdl.model.CustomSqlRowLevelExecutableRule
 import com.amazon.deequ.utils.ConditionUtils.ConditionAsString
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.wordspec.AnyWordSpec
@@ -44,6 +45,21 @@ class DQDLRuleTranslatorSpec extends AnyWordSpec with Matchers {
       deequRuleOpt shouldBe defined
       deequRuleOpt.get.check.toString should include("SizeConstraint")
     }
+
+    "translate ColumnCount rule" in {
+      val parameters: Map[String, String] = Map.empty
+      val rule: DQRule = new DQRule("ColumnCount", parameters.asJava, "=3".asCondition)
+      val deequRuleOpt: Option[DeequExecutableRule] = DQDLRuleTranslator.translateRule(rule).toOption
+      deequRuleOpt shouldBe defined
+      deequRuleOpt.get.check.toString should include("ColumnCountConstraint")
+    }
+  }
+
+  "get executable rules for ColumnCount" in {
+    val ruleset: DQRuleset = DefaultDQDLParser.parse("Rules=[ColumnCount = 3]")
+    val rules = DQDLRuleTranslator.toExecutableRules(ruleset)
+    rules.size should equal(1)
+    rules.head.evaluatedMetricName.get should equal("Dataset.*.ColumnCount")
   }
 
   "get executable rules for RowCount" in {
@@ -60,21 +76,27 @@ class DQDLRuleTranslatorSpec extends AnyWordSpec with Matchers {
     rule.dqRule.getRuleType should equal("RowCount")
   }
 
-  /*
-  this test should be removed once all rules are supported. till then just put the next unimplemented rule here.
-   */
-  "get unknown executable rule" in {
-    // given
-    val ruleset: DQRuleset = DefaultDQDLParser
-      .parse("Rules=[ColumnValues \"Foo\" = 5]")
-
-    // when
+  "route scalar CustomSql to DeequExecutableRule" in {
+    val ruleset = DefaultDQDLParser.parse("""Rules=[CustomSql "select count(*) from primary" > 0]""")
     val rules = DQDLRuleTranslator.toExecutableRules(ruleset)
-
-    // then
     rules.size should equal(1)
-    val rule = rules.head
-    rule shouldBe an[UnsupportedExecutableRule]
-    rule.evaluatedMetricName should equal(None)
+    rules.head shouldBe a[DeequExecutableRule]
+    rules.head.evaluatedMetricName.get should equal("Dataset.*.CustomSQL")
+  }
+
+  "route row-level CustomSql to CustomSqlRowLevelExecutableRule" in {
+    val ruleset = DefaultDQDLParser.parse("""Rules=[CustomSql "select id from primary where age > 18"]""")
+    val rules = DQDLRuleTranslator.toExecutableRules(ruleset)
+    rules.size should equal(1)
+    rules.head shouldBe a[CustomSqlRowLevelExecutableRule]
+    rules.head.evaluatedMetricName.get should equal("Dataset.*.CustomSQL.Compliance")
+  }
+
+  "route row-level CustomSql with threshold to CustomSqlRowLevelExecutableRule" in {
+    val ruleset = DefaultDQDLParser.parse(
+      """Rules=[CustomSql "select id from primary where age > 18" with threshold > 0.5]""")
+    val rules = DQDLRuleTranslator.toExecutableRules(ruleset)
+    rules.size should equal(1)
+    rules.head shouldBe a[CustomSqlRowLevelExecutableRule]
   }
 }

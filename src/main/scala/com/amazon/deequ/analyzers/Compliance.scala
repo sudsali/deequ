@@ -21,6 +21,7 @@ import org.apache.spark.sql.{Column, Row}
 import org.apache.spark.sql.functions._
 import Analyzers._
 import com.amazon.deequ.analyzers.Preconditions.hasColumn
+import com.amazon.deequ.metrics.DoubleMetric
 import com.google.common.annotations.VisibleForTesting
 
 /**
@@ -50,6 +51,17 @@ case class Compliance(instance: String,
     }
   }
 
+  // When WHERE clause filters all rows, sum(criterion) returns null (criterion is null for
+  // non-matching rows), so fromAggregationResult returns None. We still need the fullColumn
+  // (rowLevelResults) for correct row-level results.
+  override def computeMetricFrom(state: Option[NumMatchesAndCount]): DoubleMetric = {
+    state match {
+      case None if where.isDefined =>
+        metricFromEmptyWithColumn(this, "Compliance", instance, rowLevelResults)
+      case _ => super.computeMetricFrom(state)
+    }
+  }
+
   override def aggregationFunctions(): Seq[Column] = {
     val summation = sum(criterion.cast(IntegerType))
     summation :: conditionalCount(where) :: Nil
@@ -62,7 +74,7 @@ case class Compliance(instance: String,
 
   private def rowLevelResults: Column = {
     val filteredRowOutcome = getRowLevelFilterTreatment(analyzerOptions)
-    val whereNotCondition = where.map { expression => not(expr(expression)) }
+    val whereNotCondition = where.map { expression => not(expr(expression)) || expr(expression).isNull }
 
     filteredRowOutcome match {
       case FilteredRowOutcome.TRUE =>

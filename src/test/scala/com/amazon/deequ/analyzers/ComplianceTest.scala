@@ -71,6 +71,31 @@ class ComplianceTest extends AnyWordSpec with Matchers with SparkContextSpec wit
         if (r == null) null else r.getAs[Boolean]("new")) shouldBe Seq(true, true, true, false, true, true)
     }
 
+    "return row-level results with NULL in where clause column treated as filtered" in withSparkSession { session =>
+      import session.implicits._
+
+      val data = Seq(
+        ("1", "USA", "AUS"),  // matches WHERE, predicate passes -> true
+        ("2", "GER", "AUS"),  // matches WHERE, predicate fails -> false
+        ("3", "USA", null),   // NULL in WHERE col, should be filtered -> true
+        ("4", "GER", null),   // NULL in WHERE col, should be filtered -> true
+        ("5", "USA", "USA")   // doesn't match WHERE -> true (filtered)
+      ).toDF("item", "championnationality", "runnerupnationality")
+
+      val compliance = Compliance(
+        "rule1",
+        "championnationality IN ('USA', 'AUS')",
+        where = Option("runnerupnationality = 'AUS'"),
+        analyzerOptions = Option(AnalyzerOptions(filteredRow = FilteredRowOutcome.TRUE))
+      )
+
+      val state = compliance.computeStateFrom(data)
+      val metric: DoubleMetric with FullColumn = compliance.computeMetricFrom(state)
+
+      data.withColumn("result", metric.fullColumn.get).collect().map(r =>
+        r.getAs[Boolean]("result")) shouldBe Seq(true, false, true, true, true)
+    }
+
     "return row-level results for compliance in bounds" in withSparkSession { session =>
       val column = "att1"
       val leftOperand = ">="
@@ -199,5 +224,34 @@ class ComplianceTest extends AnyWordSpec with Matchers with SparkContextSpec wit
       data.withColumn("new", metric.fullColumn.get).collect().map(r =>
         if (r == null) null else r.getAs[Boolean]("new")) shouldBe Seq(false, false, true, true, true, true)
     }
+
+    "preserve fullColumn in metric when where clause filters all rows" in withSparkSession { session =>
+      val data = getDfWithNumericValues(session)
+
+      val analyzer = Compliance("att1 positive", "att1 > 0", where = Some("att1 > 100"))
+      val state = analyzer.computeStateFrom(data)
+      val metric = analyzer.computeMetricFrom(state)
+
+      state shouldBe None
+      metric.value.isFailure shouldBe true
+      metric.fullColumn shouldBe defined
+    }
+
+    "return null row-level results when where filters all rows with NULL" in
+      withSparkSession { session =>
+        val data = getDfWithNumericValues(session)
+
+        val analyzer = Compliance("att1 positive", "att1 > 0",
+          where = Some("att1 > 100"),
+          analyzerOptions = Some(AnalyzerOptions(
+            filteredRow = FilteredRowOutcome.NULL)))
+        val state = analyzer.computeStateFrom(data)
+        val metric = analyzer.computeMetricFrom(state)
+
+        metric.fullColumn shouldBe defined
+        val results = data.withColumn("result", metric.fullColumn.get)
+          .collect().map(r => r.isNullAt(r.fieldIndex("result")))
+        results.foreach(_ shouldBe true)
+      }
   }
 }

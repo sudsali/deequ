@@ -1,5 +1,5 @@
 /**
- * Copyright 2025 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ * Copyright 2026 Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License"). You may not
  * use this file except in compliance with the License. A copy of the License
@@ -16,8 +16,8 @@
 
 package com.amazon.deequ.dqdl.execution
 
-import com.amazon.deequ.dqdl.execution.executors.{DeequRulesExecutor, UnsupportedRulesExecutor}
-import com.amazon.deequ.dqdl.model.{DeequExecutableRule, ExecutableRule, Failed, RuleOutcome, UnsupportedExecutableRule}
+import com.amazon.deequ.dqdl.execution.executors.{AggregateMatchExecutor, ColumnDataTypeExecutor, ColumnNamesMatchPatternExecutor, CompositeRulesExecutor, CustomSqlRowLevelExecutor, DataFreshnessExecutor, DatasetMatchExecutor, DeequRulesExecutor, ReferentialIntegrityExecutor, RowCountMatchExecutor, SchemaMatchExecutor, UnsupportedRulesExecutor}
+import com.amazon.deequ.dqdl.model.{AggregateMatchExecutableRule, ColumnDataTypeExecutableRule, ColumnNamesMatchPatternExecutableRule, CompositeExecutableRule, CustomSqlRowLevelExecutableRule, DataFreshnessExecutableRule, DatasetMatchExecutableRule, DeequExecutableRule, ExecutableRule, Failed, ReferentialIntegrityExecutableRule, RowCountMatchExecutableRule, RuleOutcome, SchemaMatchExecutableRule, UnsupportedExecutableRule}
 import org.apache.spark.sql.DataFrame
 import software.amazon.glue.dqdl.model.DQRule
 
@@ -28,23 +28,36 @@ import software.amazon.glue.dqdl.model.DQRule
 object DQDLExecutor {
 
   trait RuleExecutor[T <: ExecutableRule] {
-    def executeRules(rules: Seq[T], df: DataFrame): Map[DQRule, RuleOutcome]
+    def executeRules(rules: Seq[T], df: DataFrame,
+                     additionalDataSources: Map[String, DataFrame] = Map.empty): Map[DQRule, RuleOutcome]
   }
 
   // Map from rule class to its executor
   private val executors = Map[Class[_ <: ExecutableRule], RuleExecutor[_ <: ExecutableRule]](
     classOf[DeequExecutableRule] -> DeequRulesExecutor,
-    classOf[UnsupportedExecutableRule] -> UnsupportedRulesExecutor
+    classOf[CompositeExecutableRule] -> CompositeRulesExecutor,
+    classOf[UnsupportedExecutableRule] -> UnsupportedRulesExecutor,
+    classOf[RowCountMatchExecutableRule] -> RowCountMatchExecutor,
+    classOf[ReferentialIntegrityExecutableRule] -> ReferentialIntegrityExecutor,
+    classOf[SchemaMatchExecutableRule] -> SchemaMatchExecutor,
+    classOf[DataFreshnessExecutableRule] -> DataFreshnessExecutor,
+    classOf[ColumnDataTypeExecutableRule] -> ColumnDataTypeExecutor,
+    classOf[ColumnNamesMatchPatternExecutableRule] -> ColumnNamesMatchPatternExecutor,
+    classOf[DatasetMatchExecutableRule] -> DatasetMatchExecutor,
+    classOf[AggregateMatchExecutableRule] -> AggregateMatchExecutor,
+    classOf[CustomSqlRowLevelExecutableRule] -> CustomSqlRowLevelExecutor
   )
 
-  def executeRules(rules: Seq[ExecutableRule], df: DataFrame): Map[DQRule, RuleOutcome] = {
+  def executeRules(rules: Seq[ExecutableRule], df: DataFrame,
+                   additionalDataSources: Map[String, DataFrame] = Map.empty): Map[DQRule, RuleOutcome] = {
     // Group rules to execute each group with the corresponding executor
     val rulesByType = rules.groupBy(_.getClass)
 
     rulesByType.flatMap {
       case (ruleClass, rules) =>
         executors.get(ruleClass) match {
-          case Some(executor) => executor.asInstanceOf[RuleExecutor[ExecutableRule]].executeRules(rules, df)
+          case Some(executor) =>
+            executor.asInstanceOf[RuleExecutor[ExecutableRule]].executeRules(rules, df, additionalDataSources)
           case None => handleError(rules)
         }
     }

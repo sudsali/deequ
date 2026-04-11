@@ -2,7 +2,7 @@
 [![GitHub license](https://img.shields.io/github/license/awslabs/deequ.svg)](https://github.com/awslabs/deequ/blob/master/LICENSE)
 [![GitHub issues](https://img.shields.io/github/issues/awslabs/deequ.svg)](https://github.com/awslabs/deequ/issues)
 [![Build Status](https://github.com/awslabs/deequ/actions/workflows/maven.yml/badge.svg?branch=master)](https://github.com/awslabs/deequ/actions/workflows/maven.yml?query=branch%3Amaster)
-[![Maven Central](https://maven-badges.herokuapp.com/maven-central/com.amazon.deequ/deequ/badge.svg)](https://maven-badges.herokuapp.com/maven-central/com.amazon.deequ/deequ)
+[![Maven Central](https://img.shields.io/maven-central/v/com.amazon.deequ/deequ.svg)](https://search.maven.org/artifact/com.amazon.deequ/deequ)
 
 Deequ is a library built on top of Apache Spark for defining "unit tests for data", which measure data quality in large datasets. We are happy to receive feedback and [contributions](CONTRIBUTING.md).
 
@@ -141,6 +141,7 @@ Deequ also supports [DQDL](https://docs.aws.amazon.com/glue/latest/dg/dqdl.html)
 ### Supported DQDL Rules
 
 - **RowCount**: `RowCount < 100`
+- **ColumnCount**: `ColumnCount = 10`
 - **Completeness**: `Completeness "column" > 0.9`
 - **IsComplete**: `IsComplete "column"`
 - **Uniqueness**: `Uniqueness "column" = 1.0`
@@ -156,6 +157,16 @@ Deequ also supports [DQDL](https://docs.aws.amazon.com/glue/latest/dg/dqdl.html)
 - **IsPrimaryKey**: `IsPrimaryKey "column"`
 - **ColumnLength**: `ColumnLength "column" between 1 and 5`
 - **ColumnExists**: `ColumnExists "column"`
+- **ColumnValues**: Validate column values against numeric, string, or date expressions
+  - Numeric: `ColumnValues "price" > 0`, `ColumnValues "age" between 18 and 65`
+  - String: `ColumnValues "status" in ["active", "inactive"]`
+  - Date: `ColumnValues "order_date" > "2022-01-01"`, `ColumnValues "order_date" between "2022-01-01" and "2023-01-01"`
+- **RowCountMatch**: `RowCountMatch "referenceDataset" >= 0.9`
+- **SchemaMatch**: `SchemaMatch "referenceDataset" > 0.8`
+- **DataFreshness**: `DataFreshness "Order_Date" <= 24 hours`
+- **Composite Rules**: Combine multiple rules with `and` / `or` operators
+  - Simple: `(RowCount > 0) and (IsComplete "column")`
+  - Nested: `(Rule1) or ((Rule2) and (Rule3))`
 
 ### Scala Example
 
@@ -187,6 +198,37 @@ val ruleset = """Rules=[IsUnique "item", RowCount < 10, Completeness "item" > 0.
 val results = EvaluateDataQuality.process(df, ruleset)
 results.show()
 ```
+
+### Row-Level Results
+
+Use `processRows()` to identify which specific rows pass or fail each rule:
+
+```scala
+val df = Seq(
+  ("1", "Alice", Some(25)),
+  ("2", "Bob", None),
+  ("3", null, Some(30))
+).toDF("id", "name", "age")
+
+val ruleset = """Rules=[IsComplete "name", IsComplete "age"]"""
+
+val results = EvaluateDataQuality.processRows(df, ruleset)
+
+// Access the row-level outcomes
+val rowLevelOutcomes = results("rowLevelOutcomes")
+rowLevelOutcomes.select("id", "DataQualityRulesPass", "DataQualityRulesFail", "DataQualityEvaluationResult").show(false)
+
+// Filter to failed rows
+val failedRows = rowLevelOutcomes.filter($"DataQualityEvaluationResult" === "Failed")
+```
+
+The `rowLevelOutcomes` DataFrame contains:
+- `DataQualityRulesPass`: Array of rules that passed for each row
+- `DataQualityRulesFail`: Array of rules that failed for each row  
+- `DataQualityRulesSkip`: Array of rules without row-level support
+- `DataQualityEvaluationResult`: "Passed" or "Failed" for each row
+
+**Note:** Row-level evaluation is supported for `IsComplete`, `IsUnique`, `ColumnValues` (IN/NOT IN), `Completeness`, `Uniqueness`, and composite rules. Dataset-level rules like `RowCount` and `Mean` are marked as skipped.
 
 ### Java Example
 
@@ -220,6 +262,57 @@ String ruleset = "Rules=[IsUnique \"item\", RowCount < 10, Completeness \"item\"
 Dataset<Row> results = EvaluateDataQuality.process(df, ruleset);
 results.show();
 ```
+
+### Composite Rules Example
+
+Composite rules allow you to combine multiple data quality checks using logical operators (`and`, `or`). This enables complex validation scenarios:
+
+```scala
+import com.amazon.deequ.dqdl.EvaluateDataQuality
+import org.apache.spark.sql.SparkSession
+
+val spark = SparkSession.builder()
+  .appName("Composite Rules Example")
+  .master("local[*]")
+  .getOrCreate()
+
+import spark.implicits._
+
+val df = Seq(
+  (1, "Alice", 25, "alice@example.com"),
+  (2, "Bob", 30, "bob@example.com"),
+  (3, "Charlie", 35, "charlie@example.com")
+).toDF("id", "name", "age", "email")
+
+// Simple AND: Both conditions must be true
+val andRule = """Rules=[(RowCount > 0) and (IsComplete "email")]"""
+val andResults = EvaluateDataQuality.process(df, andRule)
+andResults.show()
+
+// Simple OR: At least one condition must be true
+val orRule = """Rules=[(RowCount > 100) or (IsUnique "id")]"""
+val orResults = EvaluateDataQuality.process(df, orRule)
+orResults.show()
+
+// Nested composition: Complex logic with multiple levels
+val nestedRule = """Rules=[
+  ((IsComplete "name") and (IsComplete "email")) or 
+  ((RowCount > 0) and (IsUnique "id"))
+]"""
+val nestedResults = EvaluateDataQuality.process(df, nestedRule)
+nestedResults.show()
+
+// Multiple composite rules in one ruleset
+val multipleRules = """Rules=[
+  (RowCount > 0) and (IsComplete "id"),
+  (IsUnique "id") or (IsUnique "email"),
+  ((Mean "age" > 20) and (Mean "age" < 50)) or (RowCount < 10)
+]"""
+val multipleResults = EvaluateDataQuality.process(df, multipleRules)
+multipleResults.show()
+```
+
+**Note:** Composite rules currently support dataset-level evaluation only. Row-level evaluation (identifying which specific rows pass/fail) is not yet implemented.
 
 ## Citation
 
