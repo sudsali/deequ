@@ -90,20 +90,32 @@ def analyze():
             f"- {f.get('filename', '')} (+{f.get('additions', 0)}/-{f.get('deletions', 0)})"
             for f in files[:30]
         )
-        prompt = prompts.PR_CLASSIFY_PROMPT.format(
-            context=context, title=title, body=body, files=files_summary, diff=diff,
-        )
-        prompt_id = prompts.prompt_version(prompts.PR_CLASSIFY_PROMPT)
+        tmpl = prompts.get_pr_prompt()
+        if not tmpl:
+            _write_artifact({"action": "ESCALATE", "labels": [], "response": "",
+                "reason": "prompt_load_failed", "title": title, "html_url": html_url,
+                "number": number, "is_pr": is_pr, "prompt_id": "n/a", "model_id": cfg.bedrock_model_id})
+            return
+        prompt = tmpl.format(context=context, title=title, body=body, files=files_summary, diff=diff)
+        prompt_id = prompts.prompt_version(tmpl)
     elif is_followup:
-        prompt = prompts.FOLLOWUP_PROMPT.format(
-            context=context, title=title, body=body, comments=comments_text,
-        )
-        prompt_id = prompts.prompt_version(prompts.FOLLOWUP_PROMPT)
+        tmpl = prompts.get_followup_prompt()
+        if not tmpl:
+            _write_artifact({"action": "ESCALATE", "labels": [], "response": "",
+                "reason": "prompt_load_failed", "title": title, "html_url": html_url,
+                "number": number, "is_pr": is_pr, "prompt_id": "n/a", "model_id": cfg.bedrock_model_id})
+            return
+        prompt = tmpl.format(context=context, title=title, body=body, comments=comments_text)
+        prompt_id = prompts.prompt_version(tmpl)
     else:
-        prompt = prompts.ISSUE_CLASSIFY_PROMPT.format(
-            context=context, title=title, body=body, comments=comments_text,
-        )
-        prompt_id = prompts.prompt_version(prompts.ISSUE_CLASSIFY_PROMPT)
+        tmpl = prompts.get_issue_prompt()
+        if not tmpl:
+            _write_artifact({"action": "ESCALATE", "labels": [], "response": "",
+                "reason": "prompt_load_failed", "title": title, "html_url": html_url,
+                "number": number, "is_pr": is_pr, "prompt_id": "n/a", "model_id": cfg.bedrock_model_id})
+            return
+        prompt = tmpl.format(context=context, title=title, body=body, comments=comments_text)
+        prompt_id = prompts.prompt_version(tmpl)
 
     raw = bedrock.invoke(prompt)
 
@@ -122,7 +134,7 @@ def analyze():
         snippets = _fetch_repo_snippets(gh, parsed.get("search_terms", ""), cfg)
         if snippets:
             enriched_context = kb.build_context(issue_text, snippets)
-            prompt2 = prompts.ISSUE_CLASSIFY_PROMPT.format(
+            prompt2 = tmpl.format(
                 context=enriched_context, title=title, body=body, comments=comments_text,
             )
             raw2 = bedrock.invoke(prompt2)

@@ -65,7 +65,9 @@ jobs:
           KB_S3_BUCKET: ${{ secrets.KB_S3_BUCKET }}
           KB_S3_KEY: ${{ secrets.KB_S3_KEY }}
           BEDROCK_MODEL_ID: ${{ secrets.BEDROCK_MODEL_ID }}
-          DEEQU_KNOWLEDGE_BASE: ${{ secrets.DEEQU_KNOWLEDGE_BASE }}
+          ISSUE_CLASSIFY_PROMPT: ${{ secrets.ISSUE_CLASSIFY_PROMPT }}
+          PR_CLASSIFY_PROMPT: ${{ secrets.PR_CLASSIFY_PROMPT }}
+          FOLLOWUP_PROMPT: ${{ secrets.FOLLOWUP_PROMPT }}
           DRY_RUN: ${{ inputs.dry_run || 'false' }}
           ARTIFACT_PATH: ${{ runner.temp }}/bot_result.json
         run: python -m issue_bot.main analyze

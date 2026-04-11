@@ -8,7 +8,6 @@ class KnowledgeBase:
     def __init__(self, cfg):
         self._bucket = cfg.kb_s3_bucket
         self._key = cfg.kb_s3_key
-        self._fallback = cfg.kb_fallback
         self._max_chars = cfg.max_context_chars
         self._content = ""
 
@@ -21,11 +20,7 @@ class KnowledgeBase:
                 return
             except Exception as e:
                 logger.warning(f"S3 KB failed: {e}")
-        if self._fallback:
-            self._content = self._fallback
-            logger.info("Using fallback KB")
-        else:
-            logger.warning("No KB available")
+        logger.warning("No KB available")
 
     def build_context(self, issue_text, repo_snippets=""):
         parts = []

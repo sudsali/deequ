@@ -20,7 +20,6 @@ class Config:
 
         self.kb_s3_bucket = os.getenv("KB_S3_BUCKET", "")
         self.kb_s3_key = os.getenv("KB_S3_KEY", "")
-        self.kb_fallback = os.getenv("DEEQU_KNOWLEDGE_BASE", "")
 
         self.slack_webhook_url = os.getenv("SLACK_WEBHOOK_URL", "")
 
