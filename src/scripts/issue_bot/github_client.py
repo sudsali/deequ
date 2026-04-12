@@ -58,15 +58,19 @@ class GitHubClient:
         return False
 
     def get_codebase_map(self, src_dir="src/main/scala"):
-        """List all Scala source files (excluding examples) as a simple path listing."""
+        """List all Scala source files (excluding examples) as relative paths."""
         import subprocess
         full_dir = os.path.join(self._repo_root, src_dir)
+        prefix = self._repo_root.rstrip("/") + "/"
         try:
             proc = subprocess.run(
                 ["find", full_dir, "-name", "*.scala", "-not", "-path", "*/examples/*"],
                 capture_output=True, text=True, timeout=10,
             )
-            paths = sorted(p for p in proc.stdout.strip().split("\n") if p)
+            paths = sorted(
+                p[len(prefix):] if p.startswith(prefix) else p
+                for p in proc.stdout.strip().split("\n") if p
+            )
             return "\n".join(paths)
         except Exception as e:
             logger.error(f"Codebase map failed: {e}")
