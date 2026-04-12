@@ -135,13 +135,21 @@ def analyze():
     if parsed.get("read_files") and cfg.enable_repo_search:
         snippets = _read_requested_files(gh, parsed["read_files"], cfg)
         if snippets:
-            respond_tmpl = prompts.get_issue_respond_prompt() if not is_pr else tmpl
-            if respond_tmpl:
-                prompt2 = respond_tmpl.format(
-                    context=context, source_code=snippets, title=title,
-                    body=body, comments=comments_text,
-                    **({} if not is_pr else {"files": files_summary, "diff": diff, "codebase_map": codebase_map})
-                )
+            if is_pr:
+                respond_tmpl = prompts.get_pr_respond_prompt()
+                if respond_tmpl:
+                    prompt2 = respond_tmpl.format(
+                        context=context, source_code=snippets, title=title,
+                        body=body, files=files_summary, diff=diff,
+                    )
+            else:
+                respond_tmpl = prompts.get_issue_respond_prompt()
+                if respond_tmpl:
+                    prompt2 = respond_tmpl.format(
+                        context=context, source_code=snippets, title=title,
+                        body=body, comments=comments_text,
+                    )
+            if respond_tmpl and 'prompt2' in locals():
                 raw2 = bedrock.invoke(prompt2)
                 if raw2:
                     parsed2 = _parse_response(raw2, is_pr)
@@ -150,9 +158,10 @@ def analyze():
 
     _write_artifact({
         "action": parsed["action"], "labels": parsed.get("labels", []),
-        "response": parsed.get("response", ""), "title": title,
-        "html_url": html_url, "number": number, "is_pr": is_pr,
-        "prompt_id": prompt_id, "model_id": cfg.bedrock_model_id,
+        "response": parsed.get("response", ""),
+        "inline_comments": parsed.get("inline_comments", []),
+        "title": title, "html_url": html_url, "number": number,
+        "is_pr": is_pr, "prompt_id": prompt_id, "model_id": cfg.bedrock_model_id,
     })
 
 
@@ -188,7 +197,11 @@ def act():
             action = "ESCALATE"
             response = ""
         else:
-            gh.post_comment(number, safe + footer)
+            inline_comments = result.get("inline_comments", [])
+            if is_pr and inline_comments:
+                gh.post_pr_review(number, safe + footer, inline_comments)
+            else:
+                gh.post_comment(number, safe + footer)
             gh.add_labels(number, labels)
             logger.info(f"Responded to #{number}")
 
@@ -282,7 +295,7 @@ _HEADER_PREFIXES = ("ACTION:", "LABELS:", "READ_FILES:", "SEARCH:", "SEARCH_TERM
 
 def _parse_response(raw, is_pr):
     lines = raw.strip().split("\n")
-    result = {"action": "ESCALATE", "labels": [], "response": "", "read_files": []}
+    result = {"action": "ESCALATE", "labels": [], "response": "", "read_files": [], "inline_comments": []}
     response_lines = []
 
     for line in lines:
@@ -304,10 +317,53 @@ def _parse_response(raw, is_pr):
             continue
         response_lines.append(line)
 
-    result["response"] = _clean_response("\n".join(response_lines).strip())
+    full_text = "\n".join(response_lines).strip()
+
+    if is_pr and "INLINE:" in full_text and "FILE:" in full_text:
+        result["response"], result["inline_comments"] = _parse_pr_review(full_text)
+    else:
+        result["response"] = _clean_response(full_text)
+
     if is_pr and result["action"] == "CLOSE":
         result["action"] = "ESCALATE"
     return result
+
+
+def _parse_pr_review(text):
+    """Split PR review into summary and inline comments."""
+    summary_part = ""
+    inline_comments = []
+
+    parts = text.split("INLINE:")
+    summary_part = parts[0].replace("SUMMARY:", "").strip()
+
+    if len(parts) > 1:
+        inline_text = parts[1].strip()
+        if inline_text.lower() == "none":
+            return _clean_response(summary_part), []
+
+        current = {}
+        for line in inline_text.split("\n"):
+            stripped = line.strip()
+            upper = stripped.upper()
+            if upper.startswith("FILE:"):
+                if current.get("file") and current.get("comment"):
+                    inline_comments.append(current)
+                current = {"file": stripped.split(":", 1)[1].strip()}
+            elif upper.startswith("LINE:"):
+                try:
+                    current["line"] = int(stripped.split(":", 1)[1].strip())
+                except ValueError:
+                    pass
+            elif upper.startswith("COMMENT:"):
+                current["comment"] = stripped.split(":", 1)[1].strip()
+            elif current.get("comment"):
+                current["comment"] += "\n" + stripped
+
+        if current.get("file") and current.get("comment"):
+            inline_comments.append(current)
+
+    return _clean_response(summary_part), inline_comments
 
 
 def _clean_response(text):
