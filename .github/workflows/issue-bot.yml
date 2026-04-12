@@ -23,10 +23,11 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # ── Job 1: Read-only analysis ────────────────────────────────────
   analyze:
     runs-on: ubuntu-latest
     timeout-minutes: 3
+    outputs:
+      result: ${{ steps.result.outputs.json }}
     if: >-
       (github.event_name == 'workflow_dispatch') ||
       (github.actor != 'github-actions[bot]' &&
@@ -73,14 +74,10 @@ jobs:
         run: python -m issue_bot.main analyze
         working-directory: src/scripts
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: bot-result
-          path: ${{ runner.temp }}/bot_result.json
-          retention-days: 7
+      - name: Set output
+        id: result
+        run: echo "json=$(cat ${{ runner.temp }}/bot_result.json | base64 -w 0)" >> $GITHUB_OUTPUT
 
-  # ── Job 2: Write actions ─────────────────────────────────────────
   act:
     runs-on: ubuntu-latest
     timeout-minutes: 1
@@ -101,11 +98,8 @@ jobs:
       - name: Install dependencies
         run: pip install requests boto3
 
-      - name: Download artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: bot-result
-          path: ${{ runner.temp }}
+      - name: Write artifact
+        run: echo '${{ needs.analyze.outputs.result }}' | base64 -d > ${{ runner.temp }}/bot_result.json
 
       - name: Execute actions
         env:

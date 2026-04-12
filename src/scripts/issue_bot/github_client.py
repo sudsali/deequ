@@ -1,4 +1,5 @@
 import logging
+import os
 import requests
 
 logger = logging.getLogger("issue_bot")
@@ -10,6 +11,7 @@ class GitHubClient:
         self._repo = cfg.repo
         self._timeout = cfg.github_api_timeout
         self._dry_run = cfg.dry_run
+        self._repo_root = os.getenv("GITHUB_WORKSPACE", os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")))
         self._headers = {
             "Authorization": f"token {self._token}",
             "Accept": "application/vnd.github.v3+json",
@@ -58,9 +60,10 @@ class GitHubClient:
     def get_codebase_map(self, src_dir="src/main/scala"):
         """List all Scala source files (excluding examples) as a simple path listing."""
         import subprocess
+        full_dir = os.path.join(self._repo_root, src_dir)
         try:
             proc = subprocess.run(
-                ["find", src_dir, "-name", "*.scala", "-not", "-path", "*/examples/*"],
+                ["find", full_dir, "-name", "*.scala", "-not", "-path", "*/examples/*"],
                 capture_output=True, text=True, timeout=10,
             )
             paths = sorted(p for p in proc.stdout.strip().split("\n") if p)
@@ -73,8 +76,9 @@ class GitHubClient:
         if not path.startswith("src/"):
             logger.error(f"Blocked read outside src/: {path}")
             return ""
+        full_path = os.path.join(self._repo_root, path)
         try:
-            with open(path, "r", errors="replace") as f:
+            with open(full_path, "r", errors="replace") as f:
                 content = f.read()
             if len(content) > max_chars:
                 return content[:max_chars] + "\n... (truncated)"

@@ -275,38 +275,55 @@ def _user_dissatisfied(comments):
     return False
 
 
+_HEADER_PREFIXES = ("ACTION:", "LABELS:", "READ_FILES:", "SEARCH:", "SEARCH_TERMS:")
+
+
 def _parse_response(raw, is_pr):
     lines = raw.strip().split("\n")
     result = {"action": "ESCALATE", "labels": [], "response": "", "read_files": []}
     response_lines = []
-    header_done = False
 
     for line in lines:
         upper = line.strip().upper()
-        if not header_done:
-            if upper.startswith("ACTION:"):
-                val = line.split(":", 1)[1].strip().upper()
-                if val in ("RESPOND", "ESCALATE", "CLOSE"):
-                    result["action"] = val
-                continue
-            elif upper.startswith("LABELS:"):
-                raw_labels = line.split(":", 1)[1].strip()
-                result["labels"] = [l.strip() for l in raw_labels.split(",") if l.strip().lower() not in ("none", "")]
-                continue
-            elif upper.startswith("READ_FILES:"):
-                raw_files = line.split(":", 1)[1].strip()
-                result["read_files"] = [f.strip() for f in raw_files.split(",") if f.strip().lower() not in ("none", "")]
-                continue
-            # Backward compat with old SEARCH format
-            elif upper.startswith("SEARCH:") or upper.startswith("SEARCH_TERMS:"):
-                continue
-            else:
-                header_done = True
+        if upper.startswith("ACTION:"):
+            val = line.split(":", 1)[1].strip().upper()
+            if val in ("RESPOND", "ESCALATE", "CLOSE"):
+                result["action"] = val
+            continue
+        elif upper.startswith("LABELS:"):
+            raw_labels = line.split(":", 1)[1].strip()
+            result["labels"] = [l.strip() for l in raw_labels.split(",") if l.strip().lower() not in ("none", "")]
+            continue
+        elif upper.startswith("READ_FILES:"):
+            raw_files = line.split(":", 1)[1].strip()
+            result["read_files"] = [f.strip() for f in raw_files.split(",") if f.strip().lower() not in ("none", "")]
+            continue
+        elif upper.startswith(("SEARCH:", "SEARCH_TERMS:")):
+            continue
         response_lines.append(line)
 
-    result["response"] = "\n".join(response_lines).strip()
+    result["response"] = _clean_response("\n".join(response_lines).strip())
     if is_pr and result["action"] == "CLOSE":
         result["action"] = "ESCALATE"
+    return result
+
+
+def _clean_response(text):
+    """Remove any leaked headers or internal thinking from the response."""
+    lines = text.split("\n")
+    cleaned = []
+    for line in lines:
+        upper = line.strip().upper()
+        if upper.startswith(_HEADER_PREFIXES):
+            continue
+        cleaned.append(line)
+    result = "\n".join(cleaned).strip()
+    # Remove leading preamble like "Let me request..." or "I'll analyze..."
+    while result and result.split("\n")[0].strip().lower().startswith((
+        "let me ", "i'll ", "i will ", "i need to ", "first,", "sure,",
+        "since i don't", "since i do not",
+    )):
+        result = "\n".join(result.split("\n")[1:]).strip()
     return result
 
 
