@@ -32,8 +32,16 @@ def analyze():
     kb.load()
 
     number = cfg.issue_number
-    is_pr = cfg.event_type == "pull_request"
     is_followup = cfg.event_type == "issue_comment" and cfg.event_action == "created"
+
+    if cfg.event_type == "pull_request":
+        is_pr = True
+    elif cfg.event_type in ("issues", "issue_comment"):
+        is_pr = False
+    else:
+        # workflow_dispatch or unknown — check via API
+        issue_data = gh.get_issue(number)
+        is_pr = bool(issue_data and issue_data.get("pull_request"))
 
     item = gh.get_pr(number) if is_pr else gh.get_issue(number)
     if not item:
