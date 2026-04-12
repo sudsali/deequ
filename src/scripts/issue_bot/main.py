@@ -8,6 +8,7 @@ Deequ Bot — two-phase orchestration.
 import json
 import sys
 import os
+import datetime
 import logging
 
 from .config import Config
@@ -106,7 +107,8 @@ def analyze():
             filename = f["filename"]
             patch = f["patch"]
             existing = gh.read_local_file(filename)
-            prompt = tmpl.format(filename=filename, patch=patch, existing_content=existing or "(new file)")
+            prompt = tmpl.format(filename=filename, patch=patch, existing_content=existing or "(new file)",
+                                 current_date=datetime.date.today().isoformat())
             raw = bedrock.invoke(prompt, max_tokens=500)
             if not raw or raw.strip().lower() == "no issues":
                 continue
