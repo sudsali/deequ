@@ -4,7 +4,7 @@ on:
   issues:
     types: [opened]
   pull_request:
-    types: [opened]
+    types: [opened, reopened, synchronize]
   issue_comment:
     types: [created]
   workflow_dispatch:
