@@ -26,8 +26,6 @@ jobs:
   analyze:
     runs-on: ubuntu-latest
     timeout-minutes: 3
-    outputs:
-      result: ${{ steps.result.outputs.json }}
     if: >-
       (github.event_name == 'workflow_dispatch') ||
       (github.actor != 'github-actions[bot]' &&
@@ -75,9 +73,12 @@ jobs:
         run: python -m issue_bot.main analyze
         working-directory: src/scripts
 
-      - name: Set output
-        id: result
-        run: echo "json=$(cat ${{ runner.temp }}/bot_result.json | base64 -w 0)" >> $GITHUB_OUTPUT
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bot-result
+          path: ${{ runner.temp }}/bot_result.json
+          retention-days: 1
 
   act:
     runs-on: ubuntu-latest
@@ -99,8 +100,11 @@ jobs:
       - name: Install dependencies
         run: pip install requests boto3
 
-      - name: Write artifact
-        run: echo '${{ needs.analyze.outputs.result }}' | base64 -d > ${{ runner.temp }}/bot_result.json
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: bot-result
+          path: ${{ runner.temp }}
 
       - name: Execute actions
         env:
