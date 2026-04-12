@@ -15,8 +15,8 @@ class Config:
         self.repo = _require("GITHUB_REPOSITORY")
         self.actor = os.getenv("GITHUB_ACTOR", "")
 
-        self.bedrock_model_id = os.getenv("BEDROCK_MODEL_ID", "anthropic.claude-opus-4-6-v1")
-        self.bedrock_api_version = os.getenv("BEDROCK_API_VERSION", "bedrock-2023-05-20")
+        self.bedrock_model_id = os.getenv("BEDROCK_MODEL_ID", "us.anthropic.claude-opus-4-6-v1")
+        self.bedrock_api_version = os.getenv("BEDROCK_API_VERSION", "bedrock-2023-05-31")
 
         self.kb_s3_bucket = os.getenv("KB_S3_BUCKET", "")
         self.kb_s3_key = os.getenv("KB_S3_KEY", "")
