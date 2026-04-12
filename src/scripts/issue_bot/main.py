@@ -97,27 +97,25 @@ def analyze():
         if not tmpl:
             _write_artifact({"action": "ESCALATE", "labels": [], "response": "",
                 "reason": "prompt_load_failed", "title": title, "html_url": html_url,
-                "number": number, "is_pr": is_pr, "prompt_id": "n/a", "model_id": cfg.bedrock_model_id})
+                "number": number, "is_pr": True, "prompt_id": "n/a", "model_id": cfg.bedrock_model_id})
             return
-        files = gh.get_pr_files(number)
-        src_files = [f for f in files if f.get("filename", "").endswith(".scala") and f.get("patch")]
-        inline_comments = []
-        labels = set()
-        for f in src_files:
-            filename = f["filename"]
-            patch = f["patch"]
-            existing = gh.read_local_file(filename)
-            prompt = tmpl.format(filename=filename, patch=patch, existing_content=existing or "(new file)",
-                                 current_date=datetime.date.today().isoformat())
-            raw = bedrock.invoke(prompt, max_tokens=500)
-            if not raw or raw.strip().lower() == "no issues":
-                continue
-            file_comments = _parse_file_review(raw, filename)
-            inline_comments.extend(file_comments)
+        diff = gh.get_pr_diff(number)
+        prompt = tmpl.format(
+            context=context, codebase_map=codebase_map, title=title, body=body,
+            diff=diff, current_date=datetime.date.today().isoformat(),
+        )
+        raw = bedrock.invoke(prompt, max_tokens=4000)
+        if not raw or raw.strip().lower() == "no issues":
+            _write_artifact({
+                "action": "SKIP", "reason": "no_issues_found", "title": title,
+                "html_url": html_url, "number": number, "is_pr": True,
+                "prompt_id": prompts.prompt_version(tmpl), "model_id": cfg.bedrock_model_id,
+            })
+            return
+        inline_comments = _parse_file_review_multi(raw)
         _write_artifact({
             "action": "RESPOND" if inline_comments else "SKIP",
-            "labels": list(labels),
-            "response": "",
+            "labels": [], "response": "",
             "inline_comments": inline_comments,
             "title": title, "html_url": html_url, "number": number,
             "is_pr": True, "prompt_id": prompts.prompt_version(tmpl),
@@ -345,6 +343,41 @@ def _parse_response(raw, is_pr):
     if is_pr and result["action"] == "CLOSE":
         result["action"] = "ESCALATE"
     return result
+
+
+def _parse_file_review_multi(raw):
+    """Parse multi-file review output into inline comments."""
+    comments = []
+    current_file = None
+    current_line = None
+    current_comment = []
+
+    for line in raw.strip().split("\n"):
+        stripped = line.strip()
+        upper = stripped.upper()
+        if upper.startswith("FILE:"):
+            if current_file and current_line and current_comment:
+                comments.append({"file": current_file, "line": current_line, "comment": "\n".join(current_comment).strip()})
+            current_file = stripped.split(":", 1)[1].strip()
+            current_line = None
+            current_comment = []
+        elif upper.startswith("LINE:"):
+            if current_file and current_line and current_comment:
+                comments.append({"file": current_file, "line": current_line, "comment": "\n".join(current_comment).strip()})
+            try:
+                current_line = int(stripped.split(":", 1)[1].strip())
+                current_comment = []
+            except ValueError:
+                current_line = None
+        elif upper.startswith("COMMENT:"):
+            current_comment = [stripped.split(":", 1)[1].strip()]
+        elif current_comment is not None and current_file:
+            current_comment.append(stripped)
+
+    if current_file and current_line and current_comment:
+        comments.append({"file": current_file, "line": current_line, "comment": "\n".join(current_comment).strip()})
+
+    return comments
 
 
 def _parse_file_review(raw, filename):
