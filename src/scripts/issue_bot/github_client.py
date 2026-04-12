@@ -121,7 +121,7 @@ class GitHubClient:
                 comment["side"] = "RIGHT"
             comments.append(comment)
         if comments:
-            payload = {"body": summary, "event": "COMMENT", "comments": comments}
+            payload = {"body": summary, "event": "REQUEST_CHANGES", "comments": comments}
             try:
                 resp = requests.post(
                     f"https://api.github.com/repos/{self._repo}/pulls/{number}/reviews",
