@@ -92,21 +92,38 @@ def analyze():
     codebase_map = gh.get_codebase_map() if not is_followup else ""
 
     if is_pr:
-        diff = gh.get_pr_diff(number)
-        files = gh.get_pr_files(number)
-        files_summary = "\n".join(
-            f"- {f.get('filename', '')} (+{f.get('additions', 0)}/-{f.get('deletions', 0)})"
-            for f in files[:30]
-        )
-        tmpl = prompts.get_pr_prompt()
+        tmpl = prompts.get_pr_file_review_prompt()
         if not tmpl:
             _write_artifact({"action": "ESCALATE", "labels": [], "response": "",
                 "reason": "prompt_load_failed", "title": title, "html_url": html_url,
                 "number": number, "is_pr": is_pr, "prompt_id": "n/a", "model_id": cfg.bedrock_model_id})
             return
-        prompt = tmpl.format(context=context, title=title, body=body,
-                             files=files_summary, diff=diff, codebase_map=codebase_map)
-        prompt_id = prompts.prompt_version(tmpl)
+        files = gh.get_pr_files(number)
+        src_files = [f for f in files if f.get("filename", "").endswith(".scala") and f.get("patch")]
+        inline_comments = []
+        labels = set()
+        for f in src_files:
+            filename = f["filename"]
+            patch = f["patch"]
+            existing = gh.read_local_file(filename)
+            prompt = tmpl.format(filename=filename, patch=patch, existing_content=existing or "(new file)")
+            raw = bedrock.invoke(prompt, max_tokens=500)
+            if not raw or raw.strip().lower() == "no issues":
+                continue
+            file_comments = _parse_file_review(raw, filename)
+            inline_comments.extend(file_comments)
+        _write_artifact({
+            "action": "RESPOND" if inline_comments else "SKIP",
+            "labels": list(labels),
+            "response": "",
+            "inline_comments": inline_comments,
+            "title": title, "html_url": html_url, "number": number,
+            "is_pr": True, "prompt_id": prompts.prompt_version(tmpl),
+            "model_id": cfg.bedrock_model_id,
+            "reason": "no_issues_found" if not inline_comments else "",
+        })
+        return
+
     elif is_followup:
         tmpl = prompts.get_followup_prompt()
         if not tmpl:
@@ -143,22 +160,12 @@ def analyze():
     if parsed.get("read_files") and cfg.enable_repo_search:
         snippets = _read_requested_files(gh, parsed["read_files"], cfg)
         if snippets:
-            prompt2 = None
-            if is_pr:
-                respond_tmpl = prompts.get_pr_respond_prompt()
-                if respond_tmpl:
-                    prompt2 = respond_tmpl.format(
-                        context=context, source_code=snippets, title=title,
-                        body=body, files=files_summary, diff=diff,
-                    )
-            else:
-                respond_tmpl = prompts.get_issue_respond_prompt()
-                if respond_tmpl:
-                    prompt2 = respond_tmpl.format(
-                        context=context, source_code=snippets, title=title,
-                        body=body, comments=comments_text,
-                    )
-            if prompt2:
+            respond_tmpl = prompts.get_issue_respond_prompt()
+            if respond_tmpl:
+                prompt2 = respond_tmpl.format(
+                    context=context, source_code=snippets, title=title,
+                    body=body, comments=comments_text,
+                )
                 raw2 = bedrock.invoke(prompt2)
                 if raw2:
                     parsed2 = _parse_response(raw2, is_pr)
@@ -336,6 +343,34 @@ def _parse_response(raw, is_pr):
     if is_pr and result["action"] == "CLOSE":
         result["action"] = "ESCALATE"
     return result
+
+
+def _parse_file_review(raw, filename):
+    """Parse per-file review output into inline comments."""
+    comments = []
+    current_line = None
+    current_comment = []
+
+    for line in raw.strip().split("\n"):
+        stripped = line.strip()
+        upper = stripped.upper()
+        if upper.startswith("LINE:"):
+            if current_line and current_comment:
+                comments.append({"file": filename, "line": current_line, "comment": "\n".join(current_comment).strip()})
+            try:
+                current_line = int(stripped.split(":", 1)[1].strip())
+                current_comment = []
+            except ValueError:
+                current_line = None
+        elif upper.startswith("COMMENT:"):
+            current_comment = [stripped.split(":", 1)[1].strip()]
+        elif current_comment is not None:
+            current_comment.append(stripped)
+
+    if current_line and current_comment:
+        comments.append({"file": filename, "line": current_line, "comment": "\n".join(current_comment).strip()})
+
+    return comments
 
 
 def _parse_pr_review(text):

@@ -17,8 +17,8 @@ def get_pr_prompt():
     return os.getenv("PR_CLASSIFY_PROMPT", "")
 
 
-def get_pr_respond_prompt():
-    return os.getenv("PR_RESPOND_PROMPT", "")
+def get_pr_file_review_prompt():
+    return os.getenv("PR_FILE_REVIEW_PROMPT", "")
 
 
 def get_followup_prompt():
