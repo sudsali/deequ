@@ -135,16 +135,18 @@ def analyze():
     if parsed.get("read_files") and cfg.enable_repo_search:
         snippets = _read_requested_files(gh, parsed["read_files"], cfg)
         if snippets:
-            enriched_context = kb.build_context(issue_text, snippets)
-            if is_pr:
-                prompt2 = tmpl.format(context=enriched_context, title=title, body=body,
-                                      files=files_summary, diff=diff, codebase_map=codebase_map)
-            else:
-                prompt2 = tmpl.format(context=enriched_context, title=title, body=body,
-                                      comments=comments_text, codebase_map=codebase_map)
-            raw2 = bedrock.invoke(prompt2)
-            if raw2:
-                parsed = _parse_response(raw2, is_pr)
+            respond_tmpl = prompts.get_issue_respond_prompt() if not is_pr else tmpl
+            if respond_tmpl:
+                prompt2 = respond_tmpl.format(
+                    context=context, source_code=snippets, title=title,
+                    body=body, comments=comments_text,
+                    **({} if not is_pr else {"files": files_summary, "diff": diff, "codebase_map": codebase_map})
+                )
+                raw2 = bedrock.invoke(prompt2)
+                if raw2:
+                    parsed2 = _parse_response(raw2, is_pr)
+                    parsed2["labels"] = parsed2.get("labels") or parsed.get("labels", [])
+                    parsed = parsed2
 
     _write_artifact({
         "action": parsed["action"], "labels": parsed.get("labels", []),

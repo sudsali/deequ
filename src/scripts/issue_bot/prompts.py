@@ -9,6 +9,10 @@ def get_issue_prompt():
     return os.getenv("ISSUE_CLASSIFY_PROMPT", "")
 
 
+def get_issue_respond_prompt():
+    return os.getenv("ISSUE_RESPOND_PROMPT", "")
+
+
 def get_pr_prompt():
     return os.getenv("PR_CLASSIFY_PROMPT", "")
 

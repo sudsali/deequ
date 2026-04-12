@@ -35,4 +35,19 @@ def sanitize(text):
         if m in lower:
             logger.error(f"BLOCKED: injection marker '{m}'")
             return None
+    text = _fix_accidental_issue_refs(text)
     return text
+
+
+def _fix_accidental_issue_refs(text):
+    """Replace #N references outside code blocks that would auto-link to GitHub issues."""
+    lines = text.split("\n")
+    in_code_block = False
+    fixed = []
+    for line in lines:
+        if line.strip().startswith("```"):
+            in_code_block = not in_code_block
+        if not in_code_block:
+            line = re.sub(r'#(\d+)(?!\w)', r'option \1', line)
+        fixed.append(line)
+    return "\n".join(fixed)

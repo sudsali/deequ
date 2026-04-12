@@ -67,6 +67,7 @@ jobs:
           KB_S3_KEY: ${{ secrets.KB_S3_KEY }}
           BEDROCK_MODEL_ID: ${{ secrets.BEDROCK_MODEL_ID }}
           ISSUE_CLASSIFY_PROMPT: ${{ secrets.ISSUE_CLASSIFY_PROMPT }}
+          ISSUE_RESPOND_PROMPT: ${{ secrets.ISSUE_RESPOND_PROMPT }}
           PR_CLASSIFY_PROMPT: ${{ secrets.PR_CLASSIFY_PROMPT }}
           FOLLOWUP_PROMPT: ${{ secrets.FOLLOWUP_PROMPT }}
           DRY_RUN: ${{ inputs.dry_run || 'false' }}
