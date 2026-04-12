@@ -16,19 +16,20 @@ class SlackClient:
         if self._dry_run:
             logger.info(f"[DRY RUN] Slack escalation for #{number}")
             return
-        label_text = ", ".join(labels) if labels else "none"
+        label_text = ", ".join(f"`{l}`" for l in labels) if labels else "_none_"
         text = (
-            f"*Deequ #{number} needs attention*\n"
-            f"<{url}|{title}>\n"
-            f"Labels: {label_text}\n"
-            f"Bot posted analysis on the issue."
+            f"*Deequ Issue #{number}*\n"
+            f">{title}\n\n"
+            f"*Labels:* {label_text}\n"
+            f"*Status:* Bot posted analysis on the issue\n\n"
+            f"<{url}|View on GitHub>"
         )
         self._send({"text": text})
 
     def send_error(self, message):
         if not self._enabled:
             return
-        self._send({"text": f"Deequ Bot Error: {message}"})
+        self._send({"text": f"*Deequ Bot Error*\n>{message}"})
 
     def _send(self, payload):
         try:

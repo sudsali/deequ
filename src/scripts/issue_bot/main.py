@@ -8,7 +8,6 @@ Deequ Bot — two-phase orchestration.
 import json
 import sys
 import os
-import datetime
 import logging
 
 from .config import Config
@@ -82,6 +81,7 @@ def analyze():
 
     issue_text = f"{title} {body}"
     context = kb.build_context(issue_text)
+    codebase_map = gh.get_codebase_map() if not is_followup else ""
 
     if is_pr:
         diff = gh.get_pr_diff(number)[:15000]
@@ -96,7 +96,8 @@ def analyze():
                 "reason": "prompt_load_failed", "title": title, "html_url": html_url,
                 "number": number, "is_pr": is_pr, "prompt_id": "n/a", "model_id": cfg.bedrock_model_id})
             return
-        prompt = tmpl.format(context=context, title=title, body=body, files=files_summary, diff=diff)
+        prompt = tmpl.format(context=context, title=title, body=body,
+                             files=files_summary, diff=diff, codebase_map=codebase_map)
         prompt_id = prompts.prompt_version(tmpl)
     elif is_followup:
         tmpl = prompts.get_followup_prompt()
@@ -114,7 +115,8 @@ def analyze():
                 "reason": "prompt_load_failed", "title": title, "html_url": html_url,
                 "number": number, "is_pr": is_pr, "prompt_id": "n/a", "model_id": cfg.bedrock_model_id})
             return
-        prompt = tmpl.format(context=context, title=title, body=body, comments=comments_text)
+        prompt = tmpl.format(context=context, title=title, body=body,
+                             comments=comments_text, codebase_map=codebase_map)
         prompt_id = prompts.prompt_version(tmpl)
 
     raw = bedrock.invoke(prompt)
@@ -130,13 +132,16 @@ def analyze():
 
     parsed = _parse_response(raw, is_pr)
 
-    if parsed.get("needs_search") and cfg.enable_repo_search:
-        snippets = _fetch_repo_snippets(gh, parsed.get("search_terms", ""), cfg)
+    if parsed.get("read_files") and cfg.enable_repo_search:
+        snippets = _read_requested_files(gh, parsed["read_files"], cfg)
         if snippets:
             enriched_context = kb.build_context(issue_text, snippets)
-            prompt2 = tmpl.format(
-                context=enriched_context, title=title, body=body, comments=comments_text,
-            )
+            if is_pr:
+                prompt2 = tmpl.format(context=enriched_context, title=title, body=body,
+                                      files=files_summary, diff=diff, codebase_map=codebase_map)
+            else:
+                prompt2 = tmpl.format(context=enriched_context, title=title, body=body,
+                                      comments=comments_text, codebase_map=codebase_map)
             raw2 = bedrock.invoke(prompt2)
             if raw2:
                 parsed = _parse_response(raw2, is_pr)
@@ -272,7 +277,7 @@ def _user_dissatisfied(comments):
 
 def _parse_response(raw, is_pr):
     lines = raw.strip().split("\n")
-    result = {"action": "ESCALATE", "labels": [], "response": "", "needs_search": False, "search_terms": ""}
+    result = {"action": "ESCALATE", "labels": [], "response": "", "read_files": []}
     response_lines = []
     header_done = False
 
@@ -288,11 +293,12 @@ def _parse_response(raw, is_pr):
                 raw_labels = line.split(":", 1)[1].strip()
                 result["labels"] = [l.strip() for l in raw_labels.split(",") if l.strip().lower() not in ("none", "")]
                 continue
-            elif upper.startswith("SEARCH:"):
-                result["needs_search"] = "true" in line.lower()
+            elif upper.startswith("READ_FILES:"):
+                raw_files = line.split(":", 1)[1].strip()
+                result["read_files"] = [f.strip() for f in raw_files.split(",") if f.strip().lower() not in ("none", "")]
                 continue
-            elif upper.startswith("SEARCH_TERMS:"):
-                result["search_terms"] = line.split(":", 1)[1].strip()
+            # Backward compat with old SEARCH format
+            elif upper.startswith("SEARCH:") or upper.startswith("SEARCH_TERMS:"):
                 continue
             else:
                 header_done = True
@@ -313,26 +319,13 @@ def _format_comments(comments):
     )
 
 
-def _fetch_repo_snippets(gh, search_terms, cfg):
-    if not search_terms:
-        return ""
-    local_files = gh.search_code_local(search_terms)
-    if local_files:
-        snippets = []
-        for path in local_files[:cfg.max_github_search_results]:
-            content = gh.read_local_file(path)
-            if content:
-                snippets.append(f"### {path}\n```scala\n{content}\n```")
-        if snippets:
-            return "\n\n".join(snippets)
-    items = gh.search_code(search_terms, repo_override=cfg.upstream_repo)
+def _read_requested_files(gh, file_paths, cfg):
     snippets = []
-    for item in items[:cfg.max_github_search_results]:
-        path = item.get("path", "")
-        content = gh.get_file_content(path, repo=cfg.upstream_repo)
+    for path in file_paths[:cfg.max_github_search_results]:
+        content = gh.read_local_file(path)
+        if not content:
+            content = gh.get_file_content(path, repo=cfg.upstream_repo)
         if content:
-            if len(content) > 5000:
-                content = content[:5000] + "\n... (truncated)"
             snippets.append(f"### {path}\n```scala\n{content}\n```")
     return "\n\n".join(snippets)
 

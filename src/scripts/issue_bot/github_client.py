@@ -55,25 +55,24 @@ class GitHubClient:
                 return True
         return False
 
-    def search_code_local(self, terms, src_dir="src/main/scala", max_files=5):
-        """Search the local checkout for matching Scala files. Falls back to GitHub API."""
+    def get_codebase_map(self, src_dir="src/main/scala"):
+        """List all Scala source files (excluding examples) as a simple path listing."""
         import subprocess
-        results = []
-        for term in terms.split()[:3]:
-            try:
-                proc = subprocess.run(
-                    ["grep", "-rl", "--include=*.scala", term, src_dir],
-                    capture_output=True, text=True, timeout=10,
-                )
-                for path in proc.stdout.strip().split("\n"):
-                    if path and path not in results:
-                        results.append(path)
-            except Exception:
-                continue
-        return results[:max_files]
+        try:
+            proc = subprocess.run(
+                ["find", src_dir, "-name", "*.scala", "-not", "-path", "*/examples/*"],
+                capture_output=True, text=True, timeout=10,
+            )
+            paths = sorted(p for p in proc.stdout.strip().split("\n") if p)
+            return "\n".join(paths)
+        except Exception as e:
+            logger.error(f"Codebase map failed: {e}")
+            return ""
 
-    def read_local_file(self, path, max_chars=5000):
-        """Read a file from the local checkout."""
+    def read_local_file(self, path, max_chars=15000):
+        if not path.startswith("src/"):
+            logger.error(f"Blocked read outside src/: {path}")
+            return ""
         try:
             with open(path, "r", errors="replace") as f:
                 content = f.read()
@@ -82,16 +81,6 @@ class GitHubClient:
             return content
         except Exception:
             return ""
-
-    def search_code(self, query, repo_override=None):
-        repo = repo_override or self._repo
-        url = f"https://api.github.com/search/code?q={requests.utils.quote(f'{query} repo:{repo}')}&per_page=5"
-        try:
-            resp = requests.get(url, headers=self._headers, timeout=self._timeout)
-            return resp.json().get("items", []) if resp.status_code == 200 else []
-        except Exception as e:
-            logger.error(f"Code search failed: {e}")
-            return []
 
     def get_file_content(self, path, repo=None, ref=None):
         target = repo or self._repo
