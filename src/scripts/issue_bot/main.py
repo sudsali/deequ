@@ -54,13 +54,19 @@ def analyze():
         _write_artifact({"action": "SKIP", "reason": "author_is_bot"})
         return
 
+    if item.get("state") == "closed" and not is_pr:
+        _write_artifact({"action": "SKIP", "reason": "issue_closed"})
+        return
+
     title = (item.get("title", "") or "")[:200]
     body = (item.get("body", "") or "")[:cfg.max_body_chars]
     html_url = item.get("html_url", "")
     comments_data = gh.get_comments(number)
     comments_text = _format_comments(comments_data)
 
-    if not is_followup and gh.has_bot_commented(number):
+    is_pr_update = is_pr and cfg.event_action == "synchronize"
+
+    if not is_followup and not is_pr_update and gh.has_bot_commented(number):
         _write_artifact({"action": "SKIP", "reason": "already_commented"})
         return
 
