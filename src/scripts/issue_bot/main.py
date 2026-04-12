@@ -84,7 +84,7 @@ def analyze():
     codebase_map = gh.get_codebase_map() if not is_followup else ""
 
     if is_pr:
-        diff = gh.get_pr_diff(number)[:15000]
+        diff = gh.get_pr_diff(number)
         files = gh.get_pr_files(number)
         files_summary = "\n".join(
             f"- {f.get('filename', '')} (+{f.get('additions', 0)}/-{f.get('deletions', 0)})"
