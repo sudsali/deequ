@@ -110,7 +110,6 @@ class GitHubClient:
         return self._post(f"/repos/{self._repo}/issues/{number}/comments", {"body": body})
 
     def post_pr_review(self, number, summary, inline_comments):
-        """Post a PR review with inline comments on specific lines."""
         if self._dry_run:
             logger.info(f"[DRY RUN] PR review on #{number}: {len(inline_comments)} inline comments")
             return True
@@ -121,22 +120,26 @@ class GitHubClient:
                 comment["line"] = ic["line"]
                 comment["side"] = "RIGHT"
             comments.append(comment)
-        payload = {
-            "body": summary,
-            "event": "COMMENT",
-            "comments": comments,
-        }
-        try:
-            resp = requests.post(
-                f"https://api.github.com/repos/{self._repo}/pulls/{number}/reviews",
-                headers=self._headers, json=payload, timeout=self._timeout,
-            )
-            if resp.status_code in (200, 201):
-                return True
-            logger.error(f"PR review failed: {resp.status_code} {resp.text[:200]}")
-        except Exception as e:
-            logger.error(f"PR review failed: {e}")
-        return False
+        if comments:
+            payload = {"body": summary, "event": "COMMENT", "comments": comments}
+            try:
+                resp = requests.post(
+                    f"https://api.github.com/repos/{self._repo}/pulls/{number}/reviews",
+                    headers=self._headers, json=payload, timeout=self._timeout,
+                )
+                if resp.status_code in (200, 201):
+                    return True
+                logger.error(f"PR review API failed: {resp.status_code}, falling back to comment")
+            except Exception as e:
+                logger.error(f"PR review API failed: {e}, falling back to comment")
+        # Fallback: post as regular comment with inline feedback in the body
+        body = summary
+        if inline_comments:
+            body += "\n\n**Inline feedback:**\n"
+            for ic in inline_comments:
+                line_ref = f":{ic['line']}" if ic.get('line') else ""
+                body += f"\n`{ic['file']}{line_ref}` — {ic['comment']}\n"
+        return self._post(f"/repos/{self._repo}/issues/{number}/comments", {"body": body})
 
     def add_labels(self, number, labels):
         if not labels:
