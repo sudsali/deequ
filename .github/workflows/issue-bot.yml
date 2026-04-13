@@ -118,6 +118,5 @@ jobs:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           DRY_RUN: ${{ inputs.dry_run || 'false' }}
           ARTIFACT_PATH: ${{ runner.temp }}/bot_result.json
-          ENABLE_AUTO_CLOSE: "true"
         run: python -m issue_bot.main act
         working-directory: src/scripts

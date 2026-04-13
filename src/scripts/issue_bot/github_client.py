@@ -160,20 +160,6 @@ class GitHubClient:
             return True
         return self._post(f"/repos/{self._repo}/issues/{number}/labels", {"labels": labels})
 
-    def close_issue(self, number):
-        if self._dry_run:
-            logger.info(f"[DRY RUN] Close #{number}")
-            return True
-        try:
-            resp = requests.patch(
-                f"https://api.github.com/repos/{self._repo}/issues/{number}",
-                headers=self._headers, json={"state": "closed"}, timeout=self._timeout,
-            )
-            return resp.status_code == 200
-        except Exception as e:
-            logger.error(f"Close failed: {e}")
-            return False
-
     def _get(self, path):
         try:
             resp = requests.get(f"https://api.github.com{path}", headers=self._headers, timeout=self._timeout)

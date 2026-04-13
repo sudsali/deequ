@@ -266,17 +266,15 @@ def act():
         slack.send_escalation(number, title, html_url, labels)
         logger.info(f"Escalated #{number}")
 
-    if action == "CLOSE" and cfg.enable_auto_close and not is_pr:
+    if action == "CLOSE" and not is_pr:
         msg = (
-            "This issue does not appear to be related to the Deequ data quality library "
-            "and has been automatically closed.\n\n"
-            "If this was a mistake, please reopen with additional context." + footer
+            "This issue may not be related to the Deequ data quality library. "
+            "The maintainer team has been notified and will review." + footer
         )
-        safe = sanitize(msg)
-        if safe:
-            gh.post_comment(number, safe)
-            gh.close_issue(number)
-            logger.info(f"Closed #{number}")
+        gh.post_comment(number, msg)
+        gh.add_labels(number, labels)
+        slack.send_escalation(number, title, html_url, labels)
+        logger.info(f"Flagged #{number} as potentially off-topic")
 
 
 def _bot_reply_count(comments):

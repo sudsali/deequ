@@ -24,7 +24,6 @@ class Config:
         self.slack_webhook_url = os.getenv("SLACK_WEBHOOK_URL", "")
 
         self.dry_run = os.getenv("DRY_RUN", "false").lower() == "true"
-        self.enable_auto_close = os.getenv("ENABLE_AUTO_CLOSE", "true").lower() == "true"
         self.enable_slack = bool(self.slack_webhook_url)
         self.enable_repo_search = os.getenv("ENABLE_REPO_SEARCH", "true").lower() == "true"
 
