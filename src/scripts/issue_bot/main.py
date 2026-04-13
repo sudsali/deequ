@@ -65,6 +65,16 @@ def analyze():
     comments_text = _format_comments(comments_data)
 
     is_pr_update = is_pr and cfg.event_action == "synchronize"
+    is_reopened = not is_pr and cfg.event_action == "reopened"
+
+    if is_reopened:
+        _write_artifact({
+            "action": "ESCALATE", "labels": [], "response": "",
+            "reason": "issue_reopened", "title": title,
+            "html_url": html_url, "number": number, "is_pr": is_pr,
+            "prompt_id": "n/a", "model_id": cfg.bedrock_model_id,
+        })
+        return
 
     if not is_followup and not is_pr_update and gh.has_bot_commented(number):
         _write_artifact({"action": "SKIP", "reason": "already_commented"})
@@ -248,6 +258,11 @@ def act():
             ack = (
                 "I've reached the limit of what I can assist with on this issue. "
                 "The maintainer team has been notified and will take over." + footer
+            )
+        elif reason == "issue_reopened":
+            ack = (
+                "This issue has been reopened. "
+                "A maintainer has been notified and will follow up." + footer
             )
         else:
             if response:
