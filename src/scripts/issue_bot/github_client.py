@@ -20,7 +20,7 @@ class GitHubClient:
     def get_issue(self, number):
         return self._get(f"/repos/{self._repo}/issues/{number}")
 
-    def get_comments(self, number, limit=10):
+    def get_comments(self, number):
         comments = []
         page = 1
         while True:
@@ -31,7 +31,7 @@ class GitHubClient:
             if len(batch) < 100:
                 break
             page += 1
-        return comments[-limit:]
+        return comments
 
     def get_pr(self, number):
         return self._get(f"/repos/{self._repo}/pulls/{number}")
@@ -51,8 +51,22 @@ class GitHubClient:
     def get_pr_files(self, number):
         return self._get(f"/repos/{self._repo}/pulls/{number}/files") or []
 
+    def get_pr_review_comments(self, number):
+        """Get all existing review comments on a PR."""
+        comments = []
+        page = 1
+        while True:
+            batch = self._get(f"/repos/{self._repo}/pulls/{number}/comments?per_page=100&page={page}")
+            if not batch:
+                break
+            comments.extend(batch)
+            if len(batch) < 100:
+                break
+            page += 1
+        return comments
+
     def has_bot_commented(self, number):
-        for c in self.get_comments(number, limit=50):
+        for c in self.get_comments(number):
             if c.get("user", {}).get("login") == "github-actions[bot]":
                 return True
         return False
@@ -76,17 +90,14 @@ class GitHubClient:
             logger.error(f"Codebase map failed: {e}")
             return ""
 
-    def read_local_file(self, path, max_chars=15000):
+    def read_local_file(self, path):
         if not path.startswith("src/"):
             logger.error(f"Blocked read outside src/: {path}")
             return ""
         full_path = os.path.join(self._repo_root, path)
         try:
             with open(full_path, "r", errors="replace") as f:
-                content = f.read()
-            if len(content) > max_chars:
-                return content[:max_chars] + "\n... (truncated)"
-            return content
+                return f.read()
         except Exception:
             return ""
 

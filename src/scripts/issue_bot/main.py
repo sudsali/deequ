@@ -58,8 +58,8 @@ def analyze():
         _write_artifact({"action": "SKIP", "reason": "issue_closed"})
         return
 
-    title = (item.get("title", "") or "")[:200]
-    body = (item.get("body", "") or "")[:cfg.max_body_chars]
+    title = item.get("title", "") or ""
+    body = item.get("body", "") or ""
     html_url = item.get("html_url", "")
     comments_data = gh.get_comments(number)
     comments_text = _format_comments(comments_data)
@@ -106,9 +106,12 @@ def analyze():
                 "number": number, "is_pr": True, "prompt_id": "n/a", "model_id": cfg.bedrock_model_id})
             return
         diff = gh.get_pr_diff(number)
+        review_comments = gh.get_pr_review_comments(number)
+        existing_feedback = _format_pr_feedback(comments_data, review_comments)
         prompt = tmpl.format(
             context=context, codebase_map=codebase_map, title=title, body=body,
             diff=diff, current_date=datetime.date.today().isoformat(),
+            existing_feedback=existing_feedback,
         )
         raw = bedrock.invoke(prompt, max_tokens=4000)
         if not raw or raw.strip().lower() == "no issues":
@@ -225,6 +228,13 @@ def act():
             else:
                 gh.post_comment(number, safe + footer)
             gh.add_labels(number, labels)
+            if "bug" in labels:
+                slack.send_escalation(number, title, html_url, labels)
+            elif "enhancement" in labels:
+                gh.post_comment(number,
+                    "If you're interested in contributing this feature, "
+                    "PRs are welcome! The maintainer team has been notified." + footer)
+                slack.send_escalation(number, title, html_url, labels)
             logger.info(f"Responded to #{number}")
 
     if action == "ESCALATE":
@@ -474,9 +484,24 @@ def _format_comments(comments):
     if not comments:
         return "(none)"
     return "\n".join(
-        f"{c.get('user', {}).get('login', '?')}: {(c.get('body', '') or '')[:500]}"
-        for c in comments[-5:]
+        f"{c.get('user', {}).get('login', '?')}: {c.get('body', '') or ''}"
+        for c in comments
     )
+
+
+def _format_pr_feedback(issue_comments, review_comments):
+    parts = []
+    for c in issue_comments:
+        author = c.get("user", {}).get("login", "?")
+        body = c.get("body", "") or ""
+        parts.append(f"{author}: {body}")
+    for c in review_comments:
+        author = c.get("user", {}).get("login", "?")
+        path = c.get("path", "")
+        line = c.get("line") or c.get("original_line") or "?"
+        body = c.get("body", "") or ""
+        parts.append(f"{author} on {path}:{line}: {body}")
+    return "\n".join(parts) if parts else "(no existing feedback)"
 
 
 def _read_requested_files(gh, file_paths, cfg):
